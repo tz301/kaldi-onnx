@@ -103,7 +103,8 @@ CONSTS_NAMES = {
     # KaldiOpType.Gemm.name: ['params', 'bias'],
     KaldiOpType.BatchNorm.name: ['stats_mean', 'stats_var'],
     KaldiOpType.Linear.name: ['params'],
-    # KaldiOpType.Nonlinear.name: ['value_avg', 'deriv_avg', 'value_sum', 'deriv_sum'],
+    # KaldiOpType.Nonlinear.name: ['value_avg', 'deriv_avg',
+    # 'value_sum', 'deriv_sum'],
     KaldiOpType.Permute.name: ['column_map', 'reorder'],
     KaldiOpType.Tdnn.name: ['time_offsets', 'params', 'bias'],
 }
