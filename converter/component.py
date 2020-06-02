@@ -4,7 +4,7 @@
 """Nnet3 component."""
 from abc import ABCMeta
 from enum import Enum, unique
-from typing import Dict, Optional, Set, TextIO, Tuple
+from typing import Dict, ItemsView, Set, TextIO, Tuple, Union
 
 import numpy as np
 
@@ -15,15 +15,15 @@ class Component(metaclass=ABCMeta):
   """Kaldi nnet3 component.
 
   Attributes:
-    __params: params dict.
+    _attrs: attributes dict.
   """
 
-  def __init__(self):
+  def __init__(self) -> None:
     """Initialize."""
-    self.__params = dict()
+    self._attrs = dict()
 
   @staticmethod
-  def _actions() -> Dict:
+  def _actions() -> Dict[str, Tuple]:
     """Get actions for read different params.
 
     Returns:
@@ -36,9 +36,16 @@ class Component(metaclass=ABCMeta):
     }
     return actions
 
-  def read_params(self, line_buffer: TextIO, line: str, pos: int,
-                  terminating_tokens: Set):
-    """Read component params from line.
+  def _adjust_attributes(self) -> None:
+    """Adjust attributes."""
+
+  def read_attributes(self,
+                      line_buffer: TextIO,
+                      line: str,
+                      pos: int,
+                      terminating_tokens: Set[str]
+                      ) -> None:
+    """Read component attributes from line.
 
     Args:
       line_buffer: buffer of file.
@@ -46,8 +53,8 @@ class Component(metaclass=ABCMeta):
       pos: start position.
       terminating_tokens: set of terminating tokens.
     """
-    self.__params['type'] = KaldiOpRawType[self.__class__.__name__]
-    self.__params['raw-type'] = self.__class__.__name__[1:-10]
+    self._attrs['type'] = KaldiOpRawType[self.__class__.__name__]
+    self._attrs['raw-type'] = self.__class__.__name__[1:-10]
     actions = self._actions()
 
     while True:
@@ -66,15 +73,47 @@ class Component(metaclass=ABCMeta):
       if token in actions:
         func, name = actions[token]
         obj, pos = func(line, pos, line_buffer)
-        self.__params[name] = obj
+        self._attrs[name] = obj
 
-  def update_params(self, params_dict: Dict):
-    """Update params.
+    self._adjust_attributes()
+
+  def update_attributes(self, attrs_dict: Dict[str]) -> None:
+    """Update attributes.
 
     Args:
-      params_dict: params dict.
+      attrs_dict: attribute dict.
     """
-    self.__params.update(params_dict)
+    self._attrs.update(attrs_dict)
+
+  def __contains__(self, item: str) -> bool:
+    """If key in attributes.
+
+    Args:
+      item: attribute key.
+
+    Returns:
+      If key in attributes.
+    """
+    return item in self._attrs
+
+  def __getitem__(self, item: str):
+    """Get attribute value by key.
+
+    Args:
+      item: attribute key.
+
+    Returns:
+      Attribute value.
+    """
+    return self._attrs[item]
+
+  def items(self) -> ItemsView[str]:
+    """Get attribute items.
+
+    Returns:
+      attribute items.
+    """
+    return self._attrs.items()
 
 
 class GeneralDropoutComponent(Component):
@@ -88,8 +127,8 @@ class NoOpComponent(Component):
 class AffineComponent(Component):
   """AffineComponent."""
 
-  def _actions(self) -> Dict:
-    """See baseclass document."""
+  def _actions(self) -> Dict[str, Tuple]:
+    """See parent class document."""
     actions = {
         '<LinearParams>': (_read_matrix_trans, 'params'),
         '<BiasParams>': (_read_vector_float, 'bias'),
@@ -116,8 +155,8 @@ class NaturalGradientAffineComponent(AffineComponent):
 class BatchNormComponent(Component):
   """BatchNormComponent."""
 
-  def _actions(self) -> Dict:
-    """See baseclass document."""
+  def _actions(self) -> Dict[str, Tuple]:
+    """See parent class document."""
     actions = {
         '<Dim>': (_read_int, 'dim'),
         '<BlockDim>': (_read_int, 'block_dim'),
@@ -130,12 +169,19 @@ class BatchNormComponent(Component):
     }
     return actions
 
+  def _adjust_attributes(self) -> None:
+    """Adjust attributes."""
+    add_eps = np.add(self._attrs["stats_var"], self._attrs["epsilon"])
+    scale = np.multiply(self._attrs["target_rms"], np.power(add_eps, -0.5))
+    self._attrs["stats_mean"] = scale
+    self._attrs["stats_var"] = -np.multiply(scale, self._attrs["stats_mean"])
+
 
 class LinearComponent(Component):
   """LinearComponent."""
 
-  def _actions(self) -> Dict:
-    """See baseclass document."""
+  def _actions(self) -> Dict[str, Tuple]:
+    """See parent class document."""
     actions = {
         '<Params>': (_read_matrix_trans, 'params'),
         '<RankInOut>': (_read_int, 'rank_inout'),
@@ -149,8 +195,8 @@ class LinearComponent(Component):
 class NonlinearComponent(Component):
   """NonlinearComponent."""
 
-  def _actions(self) -> Dict:
-    """See baseclass document."""
+  def _actions(self) -> Dict[str, Tuple]:
+    """See parent class document."""
     actions = {
         '<Dim>': (_read_int, 'dim'),
         '<BlockDim>': (_read_int, 'block_dim'),
@@ -174,8 +220,8 @@ class RectifiedLinearComponent(NonlinearComponent):
 class TdnnComponent(Component):
   """TdnnComponent."""
 
-  def _actions(self) -> Dict:
-    """See baseclass document."""
+  def _actions(self) -> Dict[str, Tuple]:
+    """See parent class document."""
     actions = {
         '<TimeOffsets>': (_read_vector_int, 'time_offsets'),
         '<LinearParams>': (_read_matrix_trans, 'params'),
@@ -207,7 +253,7 @@ class Components(Enum):
   TdnnComponent = TdnnComponent
 
 
-def read_next_token(line: str, pos: int) -> Tuple[Optional[str], int]:
+def read_next_token(line: str, pos: int) -> Tuple[Union[str, None], int]:
   """Read next token from line.
 
   Args:
@@ -251,7 +297,6 @@ def read_component_type(line: str, pos: int) -> Tuple[str, int]:
                      f'expected <xxxComponent>, got: {component_type}.')
 
 
-# pylint: disable = unused-argument
 def _read_bool(line: str, pos: int, line_buffer: TextIO) -> Tuple[bool, int]:
   """Read bool value from line.
 
@@ -263,6 +308,8 @@ def _read_bool(line: str, pos: int, line_buffer: TextIO) -> Tuple[bool, int]:
   Returns:
     bool value and current position.
   """
+  del line_buffer  # Unused.
+
   tok, pos = read_next_token(line, pos)
   if tok in ['F', 'False', 'false']:
     return False, pos
@@ -284,11 +331,12 @@ def _read_int(line: str, pos: int, line_buffer: TextIO) -> Tuple[int, int]:
   Returns:
     int value and current position.
   """
+  del line_buffer  # Unused.
+
   tok, pos = read_next_token(line, pos)
   return int(tok), pos
 
 
-# pylint: disable = unused-argument
 def _read_float(line: str, pos: int, line_buffer: TextIO) -> Tuple[float, int]:
   """Read float value from line.
 
@@ -300,12 +348,16 @@ def _read_float(line: str, pos: int, line_buffer: TextIO) -> Tuple[float, int]:
   Returns:
     float value and current position.
   """
+  del line_buffer  # Unused.
+
   tok, pos = read_next_token(line, pos)
   return float(tok), pos
 
 
-def __read_vector(line: str, pos: int,
-                  line_buffer: TextIO) -> Tuple[np.array, int]:
+def __read_vector(line: str,
+                  pos: int,
+                  line_buffer: TextIO
+                  ) -> Tuple[np.array, int]:
   """Read vector from line.
 
   Args:
@@ -340,8 +392,10 @@ def __read_vector(line: str, pos: int,
   return vector, pos
 
 
-def _read_vector_int(line: str, pos: int,
-                     line_buffer: TextIO) -> Tuple[np.array, int]:
+def _read_vector_int(line: str,
+                     pos: int,
+                     line_buffer: TextIO
+                     ) -> Tuple[np.array, int]:
   """Read int vector from line.
 
   Args:
@@ -356,8 +410,10 @@ def _read_vector_int(line: str, pos: int,
   return np.array([int(v) for v in vector], dtype=np.int), pos
 
 
-def _read_vector_float(line: str, pos: int,
-                       line_buffer: TextIO) -> Tuple[np.array, int]:
+def _read_vector_float(line: str,
+                       pos: int,
+                       line_buffer: TextIO
+                       ) -> Tuple[np.array, int]:
   """Read float vector from line.
 
   Args:
@@ -393,8 +449,10 @@ def __check_for_newline(line: str, pos: int) -> Tuple[bool, int]:
   return saw_newline, pos
 
 
-def _read_matrix_trans(line: str, pos: int,
-                       line_buffer: TextIO) -> Tuple[np.array, int]:
+def _read_matrix_trans(line: str,
+                       pos: int,
+                       line_buffer: TextIO
+                       ) -> Tuple[np.array, int]:
   """Read matrix transpose from line.
 
   Args:
