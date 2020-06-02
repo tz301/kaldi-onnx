@@ -2,7 +2,10 @@
 # -*- coding: utf-8 -*-
 # Created by tz301 on 2020/05/26
 """utils."""
-from enum import Enum, unique
+from enum import Enum
+from typing import List, Union
+
+VALUE_TYPE = Union[int, float, List[str], List[int]]
 
 
 def kaldi_check(condition: bool, msg: str) -> None:
@@ -37,7 +40,6 @@ KaldiOps = [
 ]
 
 
-@unique
 class KaldiOpType(Enum):
   """Kaldi op type, value is used for construct onnx node."""
 
@@ -50,6 +52,7 @@ class KaldiOpType(Enum):
   Linear = 'Linear'
   LogSoftmax = 'LogSoftmax'
   NoOp = 'Identity'
+  NonLinear = 'NonLinear'
   Offset = 'Offset'
   Relu = 'Relu'
   ReplaceIndex = 'ReplaceIndex'

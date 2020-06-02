@@ -9,7 +9,7 @@ from onnx import NodeProto
 from onnx.helper import make_node
 from onnx.numpy_helper import from_array
 
-from converter.utils import kaldi_check, KaldiOpType
+from converter.utils import kaldi_check, KaldiOpType, VALUE_TYPE
 
 
 class OnnxNodes:
@@ -104,8 +104,9 @@ class KaldiNode:
                name: str,
                inputs: List[str],
                outputs: List[str],
-               attrs: Union[Dict[str], None] = None,
-               consts: Union[Dict[str], None] = None) -> None:
+               attrs: Union[Dict[str, VALUE_TYPE], None] = None,
+               consts: Union[Dict[str, VALUE_TYPE], None] = None
+               ) -> None:
     """Initialize.
 
     Args:
@@ -915,8 +916,8 @@ def make_kaldi_node(node_type: KaldiOpType,
                     name: str,
                     inputs: List[str],
                     outputs: List[str],
-                    attrs: Union[Dict[str], None] = None,
-                    consts: Union[Dict[str], None] = None
+                    attrs: Union[Dict[str, VALUE_TYPE], None] = None,
+                    consts: Union[Dict[str, VALUE_TYPE], None] = None
                     ) -> KaldiNode:
   """Make kaldi node.
 

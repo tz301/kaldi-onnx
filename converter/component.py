@@ -8,7 +8,7 @@ from typing import Dict, ItemsView, Set, TextIO, Tuple, Union
 
 import numpy as np
 
-from converter.utils import KaldiOpRawType
+from converter.utils import KaldiOpRawType, VALUE_TYPE
 
 
 class Component(metaclass=ABCMeta):
@@ -77,7 +77,7 @@ class Component(metaclass=ABCMeta):
 
     self._adjust_attributes()
 
-  def update_attributes(self, attrs_dict: Dict[str]) -> None:
+  def update_attributes(self, attrs_dict: Dict[str, VALUE_TYPE]) -> None:
     """Update attributes.
 
     Args:
@@ -107,7 +107,7 @@ class Component(metaclass=ABCMeta):
     """
     return self._attrs[item]
 
-  def items(self) -> ItemsView[str]:
+  def items(self) -> ItemsView[str, VALUE_TYPE]:
     """Get attribute items.
 
     Returns:

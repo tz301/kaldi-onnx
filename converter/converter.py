@@ -38,7 +38,7 @@ _ATTRIBUTE_NAMES = {
                          'updated_period',
                          'num_samples_history',
                          'alpha'],
-    KaldiOpType.Nonlinear: ['count', 'block_dim'],
+    KaldiOpType.NonLinear: ['count', 'block_dim'],
     KaldiOpType.Offset: ['offset'],
     KaldiOpType.Scale: ['scale', 'dim'],
     KaldiOpType.Splice: ['dim',
@@ -54,10 +54,10 @@ _CONSTS_NAMES = {
     KaldiOpType.Affine: ['params', 'bias'],
     KaldiOpType.BatchNorm: ['stats_mean', 'stats_var'],
     KaldiOpType.Linear: ['params'],
-    KaldiOpType.Nonlinear.name: ['value_avg',
-                                 'deriv_avg',
-                                 'value_sum',
-                                 'deriv_sum'],
+    KaldiOpType.NonLinear: ['value_avg',
+                            'deriv_avg',
+                            'value_sum',
+                            'deriv_sum'],
     KaldiOpType.Tdnn: ['time_offsets', 'params', 'bias'],
 }
 

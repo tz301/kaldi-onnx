@@ -9,7 +9,7 @@ from typing import Dict, List, TextIO, Union
 
 from converter.component import (Component, Components, read_component_type,
                                  read_next_token)
-from converter.utils import kaldi_check, KaldiOpRawType
+from converter.utils import kaldi_check, KaldiOpRawType, VALUE_TYPE
 
 
 @unique
@@ -92,7 +92,7 @@ class Parser:
         self.__add_component(component)
 
   @staticmethod
-  def __parse_one_line(line: str) -> Union[Dict[str], None]:
+  def __parse_one_line(line: str) -> Union[Dict[str, VALUE_TYPE], None]:
     """Parse config from one line content of nnet3 file.
 
     Args:
@@ -119,7 +119,7 @@ class Parser:
       component[component_key] = component_value
     return component
 
-  def __add_component(self, component: Dict[str]) -> None:
+  def __add_component(self, component: Component) -> None:
     """Add one component.
 
     Args:
@@ -178,7 +178,7 @@ class Parser:
   def __parse_descriptor(self,
                          sub_type: str,
                          input_str: str,
-                         sub_components: List[Dict[str]]
+                         sub_components: List[Component]
                          ) -> str:
     """Parse kaldi descriptor.
 
@@ -284,7 +284,7 @@ class Parser:
   # pylint: disable=too-many-locals
   def __parse_append_descriptor(self,
                                 input_str: str,
-                                components: List[Dict[str]]
+                                components: List[Component]
                                 ) -> str:
     """Parse kaldi Append descriptor.
 
@@ -377,7 +377,7 @@ class Parser:
 
   def __parse_offset_descriptor(self,
                                 input_str: str,
-                                components: List[Dict[str]]
+                                components: List[Component]
                                 ) -> str:
     """Parse kaldi Offset descriptor.
 
@@ -415,7 +415,7 @@ class Parser:
 
   def __parse_replace_index_descriptor(self,
                                        input_str: str,
-                                       components: List[Dict[str]]
+                                       components: List[Component]
                                        ) -> str:
     """Parse kaldi ReplaceIndex descriptor.
 
@@ -449,7 +449,7 @@ class Parser:
 
   def __parse_scale_descriptor(self,
                                input_str: str,
-                               components: List[Dict[str]]
+                               components: List[Component]
                                ) -> str:
     """Parse kaldi Scale descriptor.
 
@@ -483,7 +483,7 @@ class Parser:
 
   def __parse_sum_descriptor(self,
                              input_str: str,
-                             components: List[Dict[str]]
+                             components: List[Component]
                              ) -> str:
     """Parse kaldi Sum descriptor.
 

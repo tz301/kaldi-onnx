@@ -51,7 +51,8 @@ def _test_one_model(model_dir, left_context, right_context):
   with TemporaryDirectory() as tmp_dir:
     kaldi_model_file = model_dir / 'final.txt'
     pb_file = Path(tmp_dir) / 'tf.pb'
-    Converter(kaldi_model_file, left_context, right_context, pb_file).run()
+    converter = Converter(kaldi_model_file, left_context, right_context)
+    converter.convert('tf', pb_file)
 
     with tf.compat.v1.Session() as session:
       with gfile.FastGFile(pb_file, 'rb') as pb_file:
