@@ -4,25 +4,37 @@
 """Parse nnet3 model."""
 import logging
 import re
-from typing import Dict, List, Optional, TextIO
+from enum import Enum, unique
+from typing import Dict, List, TextIO, Union
 
 from converter.component import (Component, Components, read_component_type,
                                  read_next_token)
-from converter.utils import Descriptor, kaldi_check, KaldiOpRawType
+from converter.utils import kaldi_check, KaldiOpRawType
+
+
+@unique
+class Descriptor(Enum):
+  """Kaldi nnet3 descriptor."""
+
+  Append = "Append"
+  Offset = "Offset"
+  ReplaceIndex = "ReplaceIndex"
+  Scale = "Scale"
+  Sum = "Sum"
 
 
 class Parser:
   """Kaldi nnet3 model parser.
 
   Attributes:
-    __name_to_component: {name: component_dict}.
+    __name_to_component: {name: Component}.
     __num_components: number of components.
     __line_buffer: line buffer for nnet3 file.
     __current_id: id for current parsed component.
     __type_to_component: {type_name: Component}.
   """
 
-  def __init__(self, line_buffer: TextIO):
+  def __init__(self, line_buffer: TextIO) -> None:
     """Initialize.
 
     Args:
@@ -34,7 +46,7 @@ class Parser:
     self.__current_id = 0
     self.__type_to_component = {c.value.__name__: c.value for c in Components}
 
-  def run(self) -> List:
+  def run(self) -> List[Component]:
     """Start parse nnet3 model file.
 
     Returns:
@@ -45,13 +57,13 @@ class Parser:
     self.__parse_component_lines()
     return list(self.__name_to_component.values())
 
-  def __check_header(self):
+  def __check_header(self) -> None:
     """Check nnet3 file header."""
     line = next(self.__line_buffer)
     if not line.startswith('<Nnet3>'):
       raise ValueError('Parse error: <Nnet3> header not found.')
 
-  def __parse_nnet3_configs(self):
+  def __parse_nnet3_configs(self) -> None:
     """Parse all nnet3 config."""
     while True:
       line = next(self.__line_buffer, 'Parser_EOF')
@@ -80,7 +92,7 @@ class Parser:
         self.__add_component(component)
 
   @staticmethod
-  def __parse_one_line(line: str) -> Optional[Dict]:
+  def __parse_one_line(line: str) -> Union[Dict[str], None]:
     """Parse config from one line content of nnet3 file.
 
     Args:
@@ -107,7 +119,7 @@ class Parser:
       component[component_key] = component_value
     return component
 
-  def __add_component(self, component: Dict):
+  def __add_component(self, component: Dict[str]) -> None:
     """Add one component.
 
     Args:
@@ -121,7 +133,7 @@ class Parser:
     name = component['component'] if has_component else component['name']
     self.__name_to_component[name] = component
 
-  def __parse_component_input(self, input_str) -> List[str]:
+  def __parse_component_input(self, input_str: str) -> List[str]:
     """Parse input of one component.
 
     Args:
@@ -143,7 +155,7 @@ class Parser:
     return input_name if isinstance(input_name, list) else [input_name]
 
   @staticmethod
-  def __parse_sub_type(input_str: str) -> Optional[str]:
+  def __parse_sub_type(input_str: str) -> Union[str, None]:
     """Parse input string to get sub component type.
 
     For example, input Append(Offset(input, -1), input), sub type is Append.
@@ -163,7 +175,11 @@ class Parser:
     else:
       return None
 
-  def __parse_descriptor(self, sub_type, input_str, sub_components) -> str:
+  def __parse_descriptor(self,
+                         sub_type: str,
+                         input_str: str,
+                         sub_components: List[Dict[str]]
+                         ) -> str:
     """Parse kaldi descriptor.
 
     Args:
@@ -191,7 +207,7 @@ class Parser:
                                 f'{sub_type} in input: {input_str}')
 
   @staticmethod
-  def __is_descriptor(node_type) -> bool:
+  def __is_descriptor(node_type: str) -> bool:
     """If the node belongs to nnet3 descriptor.
 
     Args:
@@ -266,8 +282,10 @@ class Parser:
     return [sentence[i:j].strip(separator) for i, j in zip(lns, lns[1:])]
 
   # pylint: disable=too-many-locals
-  def __parse_append_descriptor(self, input_str: str,
-                                components: List[Optional[Dict]]) -> str:
+  def __parse_append_descriptor(self,
+                                input_str: str,
+                                components: List[Dict[str]]
+                                ) -> str:
     """Parse kaldi Append descriptor.
 
     Args:
@@ -357,8 +375,10 @@ class Parser:
       components.append(component)
     return component_name
 
-  def __parse_offset_descriptor(self, input_str: str,
-                                components: List[Optional[Dict]]) -> str:
+  def __parse_offset_descriptor(self,
+                                input_str: str,
+                                components: List[Dict[str]]
+                                ) -> str:
     """Parse kaldi Offset descriptor.
 
     For example, Offset(input,-1) will be parsed to Offset component
@@ -393,8 +413,10 @@ class Parser:
     components.append(component)
     return component_name
 
-  def __parse_replace_index_descriptor(self, input_str: str,
-                                       components: List[Optional[Dict]]) -> str:
+  def __parse_replace_index_descriptor(self,
+                                       input_str: str,
+                                       components: List[Dict[str]]
+                                       ) -> str:
     """Parse kaldi ReplaceIndex descriptor.
 
     Args:
@@ -425,8 +447,10 @@ class Parser:
     components.append(component)
     return component_name
 
-  def __parse_scale_descriptor(self, input_str: str,
-                               components: List[Optional[Dict]]) -> str:
+  def __parse_scale_descriptor(self,
+                               input_str: str,
+                               components: List[Dict[str]]
+                               ) -> str:
     """Parse kaldi Scale descriptor.
 
     Args:
@@ -457,8 +481,10 @@ class Parser:
     components.append(component)
     return component_name
 
-  def __parse_sum_descriptor(self, input_str: str,
-                             components: List[Optional[Dict]]) -> str:
+  def __parse_sum_descriptor(self,
+                             input_str: str,
+                             components: List[Dict[str]]
+                             ) -> str:
     """Parse kaldi Sum descriptor.
 
     Args:
@@ -513,7 +539,7 @@ class Parser:
         component = self.__read_component(line, pos, component_type)
 
         if component_name in self.__name_to_component:
-          component.update_params(self.__name_to_component[component_name])
+          component.update_attributes(self.__name_to_component[component_name])
           self.__name_to_component[component_name] = component
           num += 1
       elif tok == '</Nnet3>':
@@ -524,7 +550,11 @@ class Parser:
         raise ValueError(f'Error reading component at position {pos}, '
                          f'expected <ComponentName>, got: {tok}.')
 
-  def __read_component(self, line, pos, component_type) -> Component:
+  def __read_component(self,
+                       line: str,
+                       pos: int,
+                       component_type: str
+                       ) -> Component:
     """Read component.
 
     Args:
@@ -535,13 +565,11 @@ class Parser:
     Returns:
       Component.
     """
-    terminating_token = f'</{component_type[1:]}'
-    terminating_tokens = {terminating_token, '<ComponentName>'}
-
     component_type = component_type[1:-1]
     if component_type in self.__type_to_component:
+      end_tokens = {f'</{component_type[1:]}', '<ComponentName>'}
       component = self.__type_to_component[component_type]()
-      component.read_params(self.__line_buffer, line, pos, terminating_tokens)
+      component.read_attributes(self.__line_buffer, line, pos, end_tokens)
       return component
     else:
       raise NotImplementedError(f'Component: {component_type} not supported.')
