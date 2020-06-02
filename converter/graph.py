@@ -3,11 +3,11 @@
 # Created by tz301 on 2020/05/26
 """Graph build."""
 import logging
-from typing import Dict, List
+from typing import Dict, List, Union
 
-from onnx import checker, helper, numpy_helper, onnx_pb
+from onnx import checker, helper, ModelProto, numpy_helper, onnx_pb
 
-from converter.node import make_node, Node
+from converter.node import KaldiNode, make_kaldi_node
 from converter.utils import kaldi_check, KaldiOpType
 
 # For nnet3, kaldi's default configure is input 21 frames feature, and output
@@ -38,7 +38,6 @@ class Graph:
     __name_to_node: {node name: node}.
     __name_to_dependencies: {node name: dependencies}.
     __name_to_output_indexes: {node name: output indexes}.
-    __name_to_dims: {node name: dims}.
     __name_to_input_tensor: {node name: input tensor}.
     __model_outputs: model output name list, not including initializers.
     __all_inputs: input name list of all nodes.
@@ -50,8 +49,14 @@ class Graph:
     __subsample_factor: subsample factor.
   """
 
-  def __init__(self, nodes: List[Node], inputs: List[str], outputs: List[str],
-               name_to_input_dim: Dict, left_context: int, right_context: int):
+  def __init__(self,
+               nodes: List[KaldiNode],
+               inputs: List[str],
+               outputs: List[str],
+               name_to_input_dim: Dict[str, int],
+               left_context: int,
+               right_context: int
+               ) -> None:
     """Initialize.
 
     Args:
@@ -74,7 +79,6 @@ class Graph:
     self.__name_to_node = dict()
     self.__name_to_dependencies = dict()
     self.__name_to_output_indexes = dict()
-    self.__name_to_dims = dict()
     self.__name_to_input_tensor = dict()
 
     self.__model_outputs = outputs
@@ -87,7 +91,7 @@ class Graph:
     self.__chunk_size = _CHUNK_SIZE
     self.__subsample_factor = _SUBSAMPLE_FACTOR
 
-  def __initialize_consts(self):
+  def __initialize_consts(self) -> None:
     """Initialize node name to const and node name to shape variable."""
     logging.info('Initialize consts.')
     for node in self.__nodes:
@@ -95,7 +99,7 @@ class Graph:
         self.__name_to_const[name] = const
         self.__name_to_shape[name] = const.shape
 
-  def __initialize_inputs_outputs(self):
+  def __initialize_inputs_outputs(self) -> None:
     """Initialize inputs and outputs, include all consts."""
     logging.info('Initialize inputs and outputs.')
     node_inputs = []
@@ -107,7 +111,7 @@ class Graph:
     self.__inputs = list({i for i in node_inputs if i not in node_outputs})
     self.__outputs = list({o for o in node_outputs if o not in node_inputs})
 
-  def __reorder_nodes(self):
+  def __reorder_nodes(self) -> None:
     """Reorder nodes by inputs."""
     logging.info('Reorder nodes.')
     updated_nodes = []
@@ -142,7 +146,7 @@ class Graph:
     for node in self.__nodes:
       self.__name_to_node[node.name] = node
 
-  def __initialize_model_inputs_outputs(self):
+  def __initialize_model_inputs_outputs(self) -> None:
     """Initialize model inputs and outputs, not include consts."""
     logging.info('Initialize model inputs and outputs.')
     node_inputs = []
@@ -158,22 +162,25 @@ class Graph:
     self.__model_inputs = list(model_inputs)
     self.__model_outputs = list(model_outputs)
 
-  def __inference_input_ranges(self):
-    """Inference input ranges for all nodes."""
+  def __inference_ranges(self) -> None:
+    """Inference input range and output range for all nodes."""
     logging.info('Inference input ranges.')
     input_start_idx = - self.__left_context
     input_end_idx = self.__chunk_size + self.__right_context - 1
     input_range = [input_start_idx, input_end_idx]
-    name_to_range = {_INPUT: input_range, _IVECTOR: input_range}
+    name_to_input_range = {_INPUT: input_range, _IVECTOR: input_range}
 
     for node in self.__nodes:
-      node.inference_range(name_to_range, self.__name_to_node)
+      node.inference_ranges(self.__name_to_node, name_to_input_range)
 
-  def __infer_node_dependencies(self, node: Node, output_indexes: List[int]):
+  def __infer_node_dependencies(self,
+                                node: KaldiNode,
+                                output_indexes: List[int]
+                                ) -> None:
     """Inference dependencies for one node."""
     node.inference_dependencies(output_indexes,
-                                self.__name_to_dependencies,
                                 self.__name_to_node,
+                                self.__name_to_dependencies,
                                 self.__subsample_factor)
     current_dependencies = node.dependencies
     for input_name in node.inputs:
@@ -184,7 +191,7 @@ class Graph:
         if not checked or input_name not in self.__name_to_dependencies:
           self.__infer_node_dependencies(input_node, current_dependencies)
 
-  def __inference_dependencies(self):
+  def __inference_dependencies(self) -> None:
     """Inference dependencies for all nodes."""
     logging.info('Inference dependencies.')
     final_output_indexes = list()
@@ -199,8 +206,8 @@ class Graph:
         node = self.__name_to_node[name]
         self.__infer_node_dependencies(node, output_indexes)
 
-  def __inference_output_indexes(self):
-    """Inference output indexes for all nodes."""
+  def __inference_input_indexes(self) -> None:
+    """Inference input and output indexes for all nodes."""
     logging.info('Inference indexes.')
     input_start_idx = - self.__left_context
     input_end_idx = self.__chunk_size + self.__right_context - 1
@@ -210,14 +217,15 @@ class Graph:
         self.__name_to_output_indexes[name] = indexes
     
     for node in self.__nodes:
-      node.inference_index(self.__name_to_output_indexes, self.__name_to_node)
+      node.inference_input_indexes(self.__name_to_node,
+                                   self.__name_to_output_indexes)
 
-  def __add_subsample_nodes(self):
+  def __add_subsample_nodes(self) -> None:
     """Add subsample nodes."""
     logging.info('Add subsample nodes.')
     subsample_nodes = dict()
     for node in self.__nodes:
-      if node.is_simple():
+      if node.allow_subsample():
         input_indexes = node.input_indexes
         output_indexes = node.output_indexes
         if len(output_indexes) < len(input_indexes):
@@ -225,10 +233,10 @@ class Graph:
           subsample_name = input_name + '.subsample.' + node.name
           if subsample_name not in subsample_nodes:
             subsample_inputs = [input_name]
-            subsample_node = make_node(KaldiOpType.Subsample.name,
-                                       subsample_name,
-                                       subsample_inputs,
-                                       [subsample_name])
+            subsample_node = make_kaldi_node(KaldiOpType.Subsample,
+                                             subsample_name,
+                                             subsample_inputs,
+                                             [subsample_name])
             subsample_node.input_indexes = input_indexes
             subsample_node.output_indexes = output_indexes
             subsample_nodes[subsample_name] = subsample_node
@@ -237,10 +245,10 @@ class Graph:
             if set(output_indexes) != set(subsample_node.output_indexes):
               subsample_inputs = [input_name]
               subsample_name = node.name + subsample_name
-              subsample_node = make_node(KaldiOpType.Subsample.name,
-                                         subsample_name,
-                                         subsample_inputs,
-                                         [subsample_name])
+              subsample_node = make_kaldi_node(KaldiOpType.Subsample,
+                                               subsample_name,
+                                               subsample_inputs,
+                                               [subsample_name])
               subsample_node.input_indexes = input_indexes
               subsample_node.output_indexes = output_indexes
               subsample_nodes[subsample_name] = subsample_node
@@ -262,10 +270,10 @@ class Graph:
               subsample_name = input_name + '.subsample.' + node.name
               if subsample_name not in subsample_nodes:
                 subsample_inputs = [input_name]
-                subsample_node = make_node(KaldiOpType.Subsample.name,
-                                           subsample_name,
-                                           subsample_inputs,
-                                           [subsample_name])
+                subsample_node = make_kaldi_node(KaldiOpType.Subsample,
+                                                 subsample_name,
+                                                 subsample_inputs,
+                                                 [subsample_name])
                 subsample_node.input_indexes = output_indexes
                 subsample_node.output_indexes = dependencies
                 subsample_node.dependencies = output_indexes
@@ -280,21 +288,20 @@ class Graph:
       self.__initialize_inputs_outputs()
       self.__reorder_nodes()
 
-  def __pre_compute(self):
+  def __pre_compute(self) -> None:
     """Pre compute indexes."""
     logging.info('Pre compute.')
     for node in self.__nodes:
       node.pre_compute()
 
-  def __inference_dims(self):
+  def __inference_dims(self) -> None:
     """Inference dims for all nodes."""
     logging.info('Inference dims')
     kaldi_check(_INPUT in self.__name_to_input_dim, 'Cannot find input dim.')
-    self.__name_to_dims.update(self.__name_to_input_dim)
     for node in self.__nodes:
-      node.inference_dim(self.__name_to_dims, self.__name_to_node)
+      node.inference_dims(self.__name_to_input_dim, self.__name_to_node)
 
-  def __inference_shapes(self):
+  def __inference_shapes(self) -> None:
     """Inference shapes for all nodes."""
     logging.info('Inference shapes.')
     for name in self.__inputs:
@@ -303,15 +310,23 @@ class Graph:
                                       self.__name_to_input_dim[name]]
 
     for node in self.__nodes:
-      node.inference_shape(self.__name_to_shape, self.__name_to_node)
+      node.inference_shape(self.__name_to_shape)
 
   @staticmethod
-  def __onnx_shape(shape):
+  def __onnx_shape(shape: List[int]) -> List[Union[int, str]]:
+    """Get onnx shape, -1 will be converted to unk_<n>.
+
+    Args:
+      shape: shape of node.
+
+    Returns:
+      Onnx shape.
+    """
     global _INTERNAL_INDEX
     _INTERNAL_INDEX += 1
     return [f'unk__{_INTERNAL_INDEX}' if i == -1 else i for i in shape]
 
-  def __initialize_input_tensors(self):
+  def __initialize_input_tensors(self) -> None:
     """Initialize all input tensors."""
     logging.info('Initialize input tensors.')
     for name in self.__inputs:
@@ -326,7 +341,7 @@ class Graph:
         else:
           raise ValueError('model input tensor already exists.')
 
-  def __initialize_output_tensors(self):
+  def __initialize_output_tensors(self) -> None:
     """Initialize all output tensors."""
     logging.info('Initialize output tensors.')
     for name in self.__outputs:
@@ -336,7 +351,7 @@ class Graph:
           self.__onnx_shape(self.__name_to_shape[name]))
       self.__output_tensors.append(v)
 
-  def __make_onnx_nodes(self):
+  def __make_onnx_nodes(self) -> None:
     """Make all onnx nodes."""
     logging.info('Make onnx nodes.')
     for node in self.__nodes:
@@ -347,7 +362,7 @@ class Graph:
                                      name=node.name, **node.attrs)
         self.__onnx_nodes.append(onnx_node)
 
-  def __make_initializers(self):
+  def __make_initializers(self) -> None:
     """Make initializers."""
     self.__all_inputs = []
     for node in self.__nodes:
@@ -367,7 +382,7 @@ class Graph:
     input_tensors = list(self.__name_to_input_tensor.values())
     self.__input_with_initializers.extend(input_tensors)
 
-  def __make_internal_inputs(self):
+  def __make_internal_inputs(self) -> None:
     """Make internal inputs."""
     initializers_names = [i.name for i in self.__initializers]
     input_tensors_names = [i for i in self.__all_inputs
@@ -381,7 +396,7 @@ class Graph:
           self.__onnx_shape(self.__name_to_shape[name]))
       self.__internal_inputs.append(internal_input)
 
-  def __make_onnx_model(self):
+  def __make_onnx_model(self) -> ModelProto:
     """Make onnx model.
 
     Returns:
@@ -401,16 +416,20 @@ class Graph:
     checker.check_model(onnx_model)
     return onnx_model
 
-  def run(self):
-    """Get onnx model."""
+  def make_onnx_model(self) -> ModelProto:
+    """Make onnx model.
+
+    Returns:
+      Onnx model.
+    """
     logging.info('Prepare Graph.')
     self.__initialize_consts()
     self.__initialize_inputs_outputs()
     self.__reorder_nodes()
     self.__initialize_model_inputs_outputs()
-    self.__inference_input_ranges()
-    self.__inference_dependencies()
-    self.__inference_output_indexes()
+    self.__inference_ranges()
+    self.__inference_dependencies()  # TODO(tz): dependencies and output拆开.
+    self.__inference_input_indexes()
     self.__add_subsample_nodes()
     self.__pre_compute()
     self.__inference_dims()
