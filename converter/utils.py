@@ -5,7 +5,7 @@
 from enum import Enum
 from typing import List, Union
 
-VALUE_TYPE = Union[int, float, List[str], List[int]]
+VALUE_TYPE = Union[str, int, float, List[str], List[int]]
 
 
 def kaldi_check(condition: bool, msg: str) -> None:
@@ -52,7 +52,6 @@ class KaldiOpType(Enum):
   Linear = 'Linear'
   LogSoftmax = 'LogSoftmax'
   NoOp = 'Identity'
-  NonLinear = 'NonLinear'
   Offset = 'Offset'
   Relu = 'Relu'
   ReplaceIndex = 'ReplaceIndex'
@@ -60,6 +59,7 @@ class KaldiOpType(Enum):
   Sum = 'Sum'
   Subsample = 'Subsample'
   Splice = 'Splice'
+  Tdnn = 'Tdnn'
 
 
 KaldiOpRawType = {
