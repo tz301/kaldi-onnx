@@ -8,57 +8,25 @@ from argparse import ArgumentParser
 from pathlib import Path
 from subprocess import run
 from tempfile import TemporaryDirectory
-from typing import List
 
 from onnx import ModelProto
 from onnx_tf.backend import prepare
 
-from converter.component import Component
 from converter.graph import Graph
-from converter.node import KaldiNode, make_kaldi_node
+from converter.node import *
 from converter.parser import Parser
-from converter.utils import kaldi_check, KaldiOps, KaldiOpType
 
-# TODO(tz): 不需要的属性.
-_ATTRIBUTE_NAMES = {
-    KaldiOpType.Affine: ['num_repeats', 'num_blocks'],
-    KaldiOpType.BatchNorm: ['dim',
-                            'block_dim',
-                            'epsilon',
-                            'target_rms',
-                            'count',
-                            'test_mode'],
-    KaldiOpType.Dropout: ['dim'],
-    KaldiOpType.ReplaceIndex: ['var_name',
-                               'value',
-                               'chunk_size',
-                               'left_context',
-                               'right_context'],
-    KaldiOpType.Linear: ['rank_inout',
-                         'updated_period',
-                         'num_samples_history',
-                         'alpha'],
-    KaldiOpType.NonLinear: ['count', 'block_dim'],
-    KaldiOpType.Offset: ['offset'],
-    KaldiOpType.Scale: ['scale', 'dim'],
-    KaldiOpType.Splice: ['dim',
-                         'left_context',
-                         'right_context',
-                         'context',
-                         'input_dim',
-                         'output_dim',
-                         'const_component_dim'],
-}
-
-_CONSTS_NAMES = {
-    KaldiOpType.Affine: ['params', 'bias'],
-    KaldiOpType.BatchNorm: ['stats_mean', 'stats_var'],
-    KaldiOpType.Linear: ['params'],
-    KaldiOpType.NonLinear: ['value_avg',
-                            'deriv_avg',
-                            'value_sum',
-                            'deriv_sum'],
-    KaldiOpType.Tdnn: ['time_offsets', 'params', 'bias'],
+_COMPONENT_TO_NODE = {
+    Component: KaldiNode,
+    AppendComponent: AppendNode,
+    ReplaceIndexComponent: ReplaceIndexNode,
+    OffsetComponent: OffsetNode,
+    ScaleComponent: ScaleComponent,
+    SpliceComponent: SpliceNode,
+    SumComponent: SumNode,
+    AffineComponent: AffineNode,
+    BatchNormComponent: BatchNormNode,
+    TdnnComponent: None
 }
 
 
@@ -101,7 +69,7 @@ class Converter:
     self.__outputs = []
     self.__name_to_input_dim = dict()
 
-  def __parse_nnet3_components(self) -> List[Component]:
+  def __parse_nnet3_components(self) -> List[COMPONENT_TYPE]:
     """Parse kaldi's nnet3 model file to get components.
 
     Returns:
@@ -110,69 +78,6 @@ class Converter:
     logging.info(f'Start parse nnet3 model file: {self.__nnet3_file}.')
     with self.__nnet3_file.open(encoding='utf-8') as nnet3_line_buffer:
       return Parser(nnet3_line_buffer).run()
-
-  def __convert_input_component(self, component: Component) -> None:
-    """Convert kaldi's nnet3 input component.
-
-    Args:
-      component: kaldi's nnet3 input component.
-    """
-    msg = f'"dim" or "input_dim" attribute is required: {component}.'
-    kaldi_check('dim' in component or 'input_dim' in component, msg)
-
-    has_input_dim = 'input_dim' in component
-    dim = component['input_dim'] if has_input_dim else component['dim']
-    self.__inputs.append(component['name'])
-    self.__name_to_input_dim[component['name']] = int(dim)
-
-  def __convert_output_component(self, component: Component) -> None:
-    """Convert kaldi's nnet3 output component.
-
-    Args:
-      component: kaldi's nnet3 output component.
-    """
-    self.__outputs.extend(component['input'])
-
-  def __convert_component_to_node(self, component: Component) -> KaldiNode:
-    """Convert kaldi's nnet3 component to kaldi node.
-
-    Args:
-      component: kaldi's nnet3 component.
-
-    Returns:
-      Kaldi's nnet3 node.
-    """
-    cond = 'input' in component and 'name' in component and 'type' in component
-    kaldi_check(cond, f'"input", "name" and "type" are required: {component}.')
-
-    inputs = component['input']
-    name = component['name']
-    node_type = KaldiOpType[component['type']]
-
-    if not isinstance(inputs, list):
-      inputs = [inputs]
-
-    attrs = dict()
-    if node_type in _ATTRIBUTE_NAMES:
-      attrs_names = _ATTRIBUTE_NAMES[node_type]
-      for key, value in component.items():
-        if key in attrs_names:
-          attrs[key] = value
-
-    if node_type == KaldiOpType.ReplaceIndex:
-      attrs['left_context'] = self.__left_context
-      attrs['right_context'] = self.__right_context
-
-    consts = dict()
-    if node_type in _CONSTS_NAMES:
-      const_names = _CONSTS_NAMES[node_type]
-      for const_name in const_names:
-        if const_name in component:
-          const_value = component[const_name]
-          tensor_name = f'{name}_{const_name}'
-          consts[tensor_name] = const_value
-          inputs.append(tensor_name)
-    return make_kaldi_node(node_type, name, inputs, [name], attrs, consts)
 
   def __convert_components_to_nodes(self,
                                     components: List[Component]
@@ -188,19 +93,17 @@ class Converter:
     logging.info('Convert nnet3 components to nodes.')
     nodes = []
     for component in components:
-      msg = f'"type" is required in component: {component}.'
-      kaldi_check('type' in component, msg)
-
-      component_type = component['type']
-      if component_type == 'Input':
-        self.__convert_input_component(component)
-      elif component_type == 'Output':
-        self.__convert_output_component(component)
-      elif component_type in KaldiOps:
-        nodes.append(self.__convert_component_to_node(component))
+      if isinstance(component, InputComponent):
+        self.__inputs.append(component.name)
+        self.__name_to_input_dim[component.name] = component.dim
+      elif isinstance(component, OutputComponent):
+        self.__outputs.extend(component.inputs)
       else:
-        msg = f'Unsupported component type: {component_type}.'
-        raise NotImplementedError(msg)
+        if isinstance(component, ReplaceIndexComponent):
+          component['chunk_size'] = self.__chunk_size
+          component['left_context'] = self.__left_context
+          component['right_context'] = self.__right_context
+        nodes.append(_COMPONENT_TO_NODE[component.__class__](component))
     return nodes
 
   @staticmethod
