@@ -4,12 +4,17 @@
 """Parse nnet3 model."""
 import logging
 import re
-from enum import Enum, unique
-from typing import Dict, List, TextIO, Union
+from enum import unique
 
-from converter.component import (Component, Components, read_component_type,
-                                 read_next_token)
-from converter.utils import kaldi_check, KaldiOpRawType, VALUE_TYPE
+from converter.component import *
+from converter.utils import kaldi_check, VALUE_TYPE
+
+# These components equal to corresponding onnx node.
+_COMPONENT_ONNX_TYPE = {
+  'GeneralDropoutComponent': 'Identity',
+  'NoOpComponent': 'Identity',
+  'RectifiedLinearComponent': 'Relu',
+}
 
 
 @unique
@@ -30,8 +35,8 @@ class Parser:
     __name_to_component: {name: Component}.
     __num_components: number of components.
     __line_buffer: line buffer for nnet3 file.
-    __current_id: id for current parsed component.
-    __type_to_component: {type_name: Component}.
+    __id: id for current parsed component.
+    __type_to_component: {type_name: ComponentClass}.
   """
 
   def __init__(self, line_buffer: TextIO) -> None:
@@ -43,10 +48,11 @@ class Parser:
     self.__name_to_component = dict()
     self.__num_components = 0
     self.__line_buffer = line_buffer
-    self.__current_id = 0
-    self.__type_to_component = {c.value.__name__: c.value for c in Components}
+    self.__id = 0
+    name_value_items = Components.__members__.items()
+    self.__type_to_component = {n: v.value for n, v in name_value_items}
 
-  def run(self) -> List[Component]:
+  def run(self) -> COMPONENTS_TYPE:
     """Start parse nnet3 model file.
 
     Returns:
@@ -74,22 +80,24 @@ class Parser:
         self.__num_components = int(line.split()[1])
         break
 
-      component = self.__parse_one_line(line)
-      if component is not None:
-        if 'input' in component:
-          component['input'] = self.__parse_component_input(component['input'])
+      conf = self.__parse_one_line(line)
+      if conf is not None:
+        if 'input' in conf:
+          conf['input'] = self.__parse_component_input(conf['input'])
 
-        if component['node_type'] in {'input-node', 'output-node'}:
-          msg = f'"name" attribute is required: {component}'
-          kaldi_check('name' in component, msg)
+        self.__id += 1
+        node_type = conf['node_type']
+        if node_type == 'input-node':
+          component = InputComponent(self.__id, conf['name'], int(conf['dim']))
+        elif node_type == 'output-node':
+          component = OutputComponent(self.__id, conf['name'], conf['input'])
+        elif conf['node_type'] == 'component-node':
+          name = conf['component'] if 'component' in conf else conf['name']
+          component = Component(self.__id, name, conf['input'])
+        else:
+          raise ValueError(f'Error node type: {node_type}.')
 
-          component['type'] = KaldiOpRawType[component['node_type']]
-          if 'input-node' in component:
-            component['input'] = [component['input-node']]
-
-        self.__current_id += 1
-        component['id'] = self.__current_id
-        self.__add_component(component)
+        self.__name_to_component[component.name] = component
 
   @staticmethod
   def __parse_one_line(line: str) -> Union[Dict[str, VALUE_TYPE], None]:
@@ -99,7 +107,7 @@ class Parser:
       line: one line content of nnet3 file.
 
     Returns:
-      Parsed component dict.
+      Parsed config dict.
     """
     pattern = '^input-node|^output-node|^component|^component-node'
     if re.search(pattern, line.strip()) is None:
@@ -113,25 +121,11 @@ class Parser:
       else:
         items[-1] += f' {content}'
 
-    component = {'node_type': split_contents[0]}
+    config = {'node_type': split_contents[0]}
     for item in items:
-      component_key, component_value = item.split('=')
-      component[component_key] = component_value
-    return component
-
-  def __add_component(self, component: Component) -> None:
-    """Add one component.
-
-    Args:
-      component: component dict.
-    """
-    cond = 'name' in component or 'component' in component
-    msg = f'"name" or "component" attribute is required: {component}.'
-    kaldi_check(cond, msg)
-
-    has_component = 'component' in component
-    name = component['component'] if has_component else component['name']
-    self.__name_to_component[name] = component
+      config_key, config_value = item.split('=')
+      config[config_key] = config_value
+    return config
 
   def __parse_component_input(self, input_str: str) -> List[str]:
     """Parse input of one component.
@@ -149,7 +143,7 @@ class Parser:
       sub_components = []
       input_name = self.__parse_descriptor(sub_type, input_str, sub_components)
       for component in sub_components:
-        self.__add_component(component)
+        self.__name_to_component[component.name] = component
     else:
       input_name = input_str
     return input_name if isinstance(input_name, list) else [input_name]
@@ -178,7 +172,7 @@ class Parser:
   def __parse_descriptor(self,
                          sub_type: str,
                          input_str: str,
-                         sub_components: List[Component]
+                         sub_components: COMPONENTS_TYPE
                          ) -> str:
     """Parse kaldi descriptor.
 
@@ -284,7 +278,7 @@ class Parser:
   # pylint: disable=too-many-locals
   def __parse_append_descriptor(self,
                                 input_str: str,
-                                components: List[Component]
+                                components: COMPONENTS_TYPE
                                 ) -> str:
     """Parse kaldi Append descriptor.
 
@@ -313,8 +307,8 @@ class Parser:
 
         if sub_type == Descriptor.Offset.name:
           offset_components.append(sub_comp)
-          offset_in = sub_comp['input']
-          offsets.append(sub_comp['offset'])
+          offset_in = sub_comp.inputs
+          offsets.append(sub_comp.offset)
           offset_inputs.extend(offset_in)
           offset_indexes.append(items.index(item))
       else:
@@ -325,16 +319,8 @@ class Parser:
 
     pure_inputs = list(set(offset_inputs))
     if num_inputs == len(offset_inputs) and len(pure_inputs) == 1:
-      self.__current_id += 1
-      component_name = f'splice_{self.__current_id}'
-      component = {
-          'id': self.__current_id,
-          'type': 'Splice',
-          'name': component_name,
-          'input': pure_inputs,
-          'context': offsets
-      }
-
+      self.__id += 1
+      component = SpliceComponent(self.__id, pure_inputs, offsets)
       for item in offset_components:
         components.remove(item)
       components.append(component)
@@ -342,42 +328,29 @@ class Parser:
       splice_indexes = self.__splice_continuous_numbers(offset_indexes)
       if (len(pure_inputs) == 1 and len(splice_indexes) == 1 and
           len(offset_inputs) > 1):
-        self.__current_id += 1
-        splice_comp_name = f'splice_{self.__current_id}'
-        splice_component = {
-            'id': self.__current_id,
-            'type': 'Splice',
-            'name': splice_comp_name,
-            'context': offsets,
-            'input': pure_inputs
-        }
+        self.__id += 1
+        splice_component = SpliceComponent(self.__id, pure_inputs, offsets)
 
         new_append_inputs = []
         for i in range(num_inputs):
           if i not in offset_indexes:
             new_append_inputs.append(append_inputs[i])
           elif i == offset_indexes[0]:
-            new_append_inputs.append(splice_comp_name)
+            new_append_inputs.append(splice_component.name)
         append_inputs = new_append_inputs
 
         for item in offset_components:
           components.remove(item)
         components.append(splice_component)
 
-      self.__current_id += 1
-      component_name = f'append_{self.__current_id}'
-      component = {
-          'id': self.__current_id,
-          'type': 'Append',
-          'name': component_name,
-          'input': append_inputs
-      }
+      self.__id += 1
+      component = AppendComponent(self.__id, append_inputs)
       components.append(component)
-    return component_name
+    return component.name
 
   def __parse_offset_descriptor(self,
                                 input_str: str,
-                                components: List[Component]
+                                components: COMPONENTS_TYPE
                                 ) -> str:
     """Parse kaldi Offset descriptor.
 
@@ -400,22 +373,14 @@ class Parser:
     else:
       input_name = items[0]
 
-    offset = int(items[1])
-    self.__current_id += 1
-    component_name = f'{input_name}.Offset.{offset}'
-    component = {
-        'id': self.__current_id,
-        'type': 'Offset',
-        'name': component_name,
-        'input': [input_name],
-        'offset': offset
-    }
+    self.__id += 1
+    component = OffsetComponent(self.__id, input_name, int(items[1]))
     components.append(component)
-    return component_name
+    return component.name
 
   def __parse_replace_index_descriptor(self,
                                        input_str: str,
-                                       components: List[Component]
+                                       components: COMPONENTS_TYPE
                                        ) -> str:
     """Parse kaldi ReplaceIndex descriptor.
 
@@ -435,21 +400,14 @@ class Parser:
     else:
       input_name = items[0]
 
-    component_name = f'{input_name}.ReplaceIndex.{items[1]}{items[2]}'
-    self.__current_id += 1
-    component = {
-        'id': self.__current_id,
-        'type': 'ReplaceIndex',
-        'name': component_name,
-        'input': [input_name],
-        'var_name': items[1]
-    }
+    self.__id += 1
+    component = ReplaceIndexComponent(self.__id, input_name, items[1], items[2])
     components.append(component)
-    return component_name
+    return component.name
 
   def __parse_scale_descriptor(self,
                                input_str: str,
-                               components: List[Component]
+                               components: COMPONENTS_TYPE
                                ) -> str:
     """Parse kaldi Scale descriptor.
 
@@ -469,21 +427,14 @@ class Parser:
     else:
       input_name = items[1]
 
-    component_name = f'{input_name}.Scale.{items[0]}'
-    self.__current_id += 1
-    component = {
-        'id': self.__current_id,
-        'type': 'Scale',
-        'name': component_name,
-        'input': [input_name],
-        'scale': float(items[0])
-    }
+    self.__id += 1
+    component = ScaleComponent(self.__id, input_name, float(items[0]))
     components.append(component)
-    return component_name
+    return component.name
 
   def __parse_sum_descriptor(self,
                              input_str: str,
-                             components: List[Component]
+                             components: COMPONENTS_TYPE
                              ) -> str:
     """Parse kaldi Sum descriptor.
 
@@ -506,16 +457,10 @@ class Parser:
         input_name = item
       input_names.append(input_name)
 
-    component_name = '.Sum.'.join(input_names)
-    self.__current_id += 1
-    component = {
-        'id': self.__current_id,
-        'type': 'Sum',
-        'name': component_name,
-        'input': input_names,
-    }
+    self.__id += 1
+    component = SumComponent(self.__id, input_names)
     components.append(component)
-    return component_name
+    return component.name
 
   def __parse_component_lines(self):
     """Parse all components lines."""
@@ -527,21 +472,37 @@ class Parser:
 
       if tok is None:
         line = next(self.__line_buffer)
-        pos = 0
         if line is None:
           raise ValueError(f'Unexpected EOF on line: {line}.')
 
+        pos = 0
         tok, pos = read_next_token(line, pos)
 
       if tok == '<ComponentName>':
         component_name, pos = read_next_token(line, pos)
-        component_type, pos = read_component_type(line, pos)
-        component = self.__read_component(line, pos, component_type)
+        component_type_str, pos = read_component_type(line, pos)
 
         if component_name in self.__name_to_component:
-          component.update_attributes(self.__name_to_component[component_name])
-          self.__name_to_component[component_name] = component
+          component = self.__name_to_component[component_name]
+        else:
+          raise ValueError(f"Cannot find component {component_name}.")
+
+        component_type = component_type_str[1:-1]
+        if component_type in self.__type_to_component:
+          if component_type in _COMPONENT_ONNX_TYPE:
+            component.type = _COMPONENT_ONNX_TYPE[component_type]
+
+          component_class = self.__type_to_component[component_type]
+          if component_class != Component:
+            component.__class__ = component_class
+
+          end_tokens = {f'</{component_type_str[1:]}', '<ComponentName>'}
+          component.read_attributes(self.__line_buffer, line, pos, end_tokens)
           num += 1
+        else:
+          msg = f'Component: {component_type_str} not supported.'
+          raise NotImplementedError(msg)
+
       elif tok == '</Nnet3>':
         assert num == self.__num_components
         logging.info(f'Finished parsing nnet3 {num} components.')
@@ -554,7 +515,7 @@ class Parser:
                        line: str,
                        pos: int,
                        component_type: str
-                       ) -> Component:
+                       ) -> COMPONENT_TYPE:
     """Read component.
 
     Args:
