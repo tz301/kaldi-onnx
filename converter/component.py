@@ -374,6 +374,13 @@ class Components(Enum):
   TdnnComponent = TdnnComponent
 
 
+COMPONENT_TYPE = Union[Component, InputComponent, OutputComponent,
+                       AppendComponent, OffsetComponent, ReplaceIndexComponent,
+                       ScaleComponent, SpliceComponent, SumComponent,
+                       AffineComponent, BatchNormComponent, TdnnComponent]
+COMPONENTS_TYPE = List[COMPONENT_TYPE]
+
+
 def read_next_token(line: str, pos: int) -> Tuple[Union[str, None], int]:
   """Read next token from line.
 
