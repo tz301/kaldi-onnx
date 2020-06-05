@@ -2,25 +2,108 @@
 # -*- coding: utf-8 -*-
 # Created by tz301 on 2020/05/22
 """Nnet3 component."""
-from abc import ABCMeta
-from enum import Enum, unique
-from typing import Dict, ItemsView, Set, TextIO, Tuple, Union
+from enum import Enum
+from typing import Dict, ItemsView, List, Set, TextIO, Tuple, Union
 
 import numpy as np
 
-from converter.utils import KaldiOpRawType, VALUE_TYPE
+from converter.utils import VALUE_TYPE
 
 
-class Component(metaclass=ABCMeta):
+class Component:
   """Kaldi nnet3 component.
 
+  This class read Component from nnet3 file.
+  Different Component will be convert to different KaldiNode class.
+
   Attributes:
+    id: component id.
+    name: component name.
+    inputs: input name list of component.
+    type: type of node, used in KaldiNode or onnx node.
+    dim: dimension of node.
     _attrs: attributes dict.
+    __consts: consts dict, {component name: const value}.
   """
 
-  def __init__(self) -> None:
-    """Initialize."""
+  def __init__(self,
+               component_id: int,
+               name: str,
+               inputs: List[str],
+               node_type: str = None
+               ) -> None:
+    """Initialize.
+
+    Args:
+      component_id: component id.
+      name: component name.
+      inputs: input name list of component.
+      node_type: type of node.
+    """
+    self.id = component_id  # TODO(tz): private.
+    self.name = name
+    self.inputs = inputs
+    self.type = node_type
+    self.dim = None
     self._attrs = dict()
+    self.__consts = dict()
+
+  @property
+  def attrs(self) -> Dict[str, VALUE_TYPE]:
+    """Get attributes dict.
+
+    Returns:
+      Attributes dict.
+    """
+    return self._attrs
+
+  @property
+  def consts(self) -> Dict[str, Union[List, np.array]]:
+    """Get consts dict.
+
+    Returns:
+      consts dict.
+    """
+    return self.__consts
+
+  def items(self) -> ItemsView[str, VALUE_TYPE]:
+    """Get attribute items.
+
+    Returns:
+      attribute items.
+    """
+    return self._attrs.items()
+
+  def __contains__(self, item: str) -> bool:
+    """If key in attributes.
+
+    Args:
+      item: attribute key.
+
+    Returns:
+      If key in attributes.
+    """
+    return item in self._attrs
+
+  def __getitem__(self, item: str) -> VALUE_TYPE:
+    """Get attribute value by key.
+
+    Args:
+      item: attribute key.
+
+    Returns:
+      Attribute value.
+    """
+    return self._attrs[item]
+
+  def __setitem__(self, key: str, value: VALUE_TYPE) -> None:
+    """Set attributes.
+
+    Args:
+      key: attribute key.
+      value: attribute value.
+    """
+    self._attrs[key] = value
 
   @staticmethod
   def _actions() -> Dict[str, Tuple]:
@@ -53,8 +136,6 @@ class Component(metaclass=ABCMeta):
       pos: start position.
       terminating_tokens: set of terminating tokens.
     """
-    self._attrs['type'] = KaldiOpRawType[self.__class__.__name__]
-    self._attrs['raw-type'] = self.__class__.__name__[1:-10]
     actions = self._actions()
 
     while True:
@@ -77,95 +158,179 @@ class Component(metaclass=ABCMeta):
 
     self._adjust_attributes()
 
-  def update_attributes(self, attrs_dict: Dict[str, VALUE_TYPE]) -> None:
-    """Update attributes.
+    if 'dim' in self._attrs:
+      self.dim = self._attrs['dim']
+      self._attrs.pop('dim')
+
+    const_names = ['params', 'bias', 'stats_mean', 'stats_var', 'time_offsets']
+    for const_name in const_names:
+      if const_name in self._attrs:
+        new_const_name = f'{self.name}_{const_name}'
+        self.inputs.append(new_const_name)
+        self.__consts[new_const_name] = self._attrs[const_name]
+        self._attrs.pop(const_name)
+
+
+class InputComponent(Component):
+  """Input component.
+
+  Attributes:
+    dim: dimension of input component.
+  """
+
+  def __init__(self, component_id: int, name: str, dim: int) -> None:
+    """Initialize.
 
     Args:
-      attrs_dict: attribute dict.
+      component_id: component id.
+      name: component dim.
+      dim: dimension of input component.
     """
-    self._attrs.update(attrs_dict)
+    super().__init__(component_id, name, [])
+    self.dim = dim
 
-  def __contains__(self, item: str) -> bool:
-    """If key in attributes.
+
+class OutputComponent(Component):
+  """Output component."""
+
+
+class AppendComponent(Component):
+  """Append component."""
+
+  def __init__(self, component_id: int, inputs: List[str]) -> None:
+    """Initialize.
 
     Args:
-      item: attribute key.
-
-    Returns:
-      If key in attributes.
+      component_id: component id.
+      inputs: input name list of component.
     """
-    return item in self._attrs
+    super().__init__(component_id, f'Append_{component_id}', inputs)
 
-  def __getitem__(self, item: str):
-    """Get attribute value by key.
+
+class OffsetComponent(Component):
+  """Offset component.
+
+  Attributes:
+    offset: offset of inputs.
+  """
+
+  def __init__(self, component_id: int, input_name: str, offset: float) -> None:
+    """Initialize.
 
     Args:
-      item: attribute key.
-
-    Returns:
-      Attribute value.
+      component_id: component id.
+      input_name: input name of component.
+      offset: offset.
     """
-    return self._attrs[item]
+    name = f'{input_name}.Offset.{offset}'
+    super().__init__(component_id, name, [input_name])
+    self.offset = offset
 
-  def items(self) -> ItemsView[str, VALUE_TYPE]:
-    """Get attribute items.
 
-    Returns:
-      attribute items.
+class ReplaceIndexComponent(Component):
+  """ReplaceIndex component.
+
+  Attributes:
+    var_name: var name.
+  """
+
+  def __init__(self,
+               component_id: int,
+               input_name: str,
+               var_name: str,
+               time_index: str
+               ) -> None:
+    """Initialize.
+
+    Args:
+      component_id: component id.
+      input_name: input name of component.
+      var_name: var name.
+      time_index: time index.
     """
-    return self._attrs.items()
+    name = f'{input_name}.ReplaceIndex.{var_name}{time_index}'
+    super().__init__(component_id, name, [input_name])
 
 
-class GeneralDropoutComponent(Component):
-  """GeneralDropoutComponent."""
+class ScaleComponent(Component):
+  """Scale component.
+
+  Attributes:
+    scale: scale of inputs.
+  """
+
+  def __init__(self, component_id: int, input_name: str, scale: float) -> None:
+    """Initialize.
+
+    Args:
+      component_id: component id.
+      input_name: input name of component.
+      scale: scale.
+    """
+    super().__init__(component_id, f'{input_name}.Scale.{scale}', [input_name])
+    self.scale = scale
 
 
-class NoOpComponent(Component):
-  """NoOpComponent."""
+class SpliceComponent(Component):
+  """Splice component.
+
+  Attributes:
+    context: context of inputs.
+  """
+
+  def __init__(self,
+               component_id: int,
+               inputs: List[str],
+               context: List[int]
+               ) -> None:
+    """Initialize.
+
+    Args:
+      component_id: component id.
+      inputs: input name list of component.
+      context: context list, such as [-2, 0, 2].
+    """
+    super().__init__(component_id, f'Splice_{component_id}', inputs)
+    self.context = context
+
+
+class SumComponent(Component):
+  """Sum component."""
+
+  def __init__(self, component_id: int, inputs: List[str]) -> None:
+    """Initialize.
+
+    Args:
+      component_id: component id.
+      inputs: input name list of component.
+    """
+    super().__init__(component_id, '.Sum.'.join(inputs), inputs)
 
 
 class AffineComponent(Component):
-  """AffineComponent."""
+  """Affine component."""
 
   def _actions(self) -> Dict[str, Tuple]:
     """See parent class document."""
     actions = {
+        '<Params>': (_read_matrix_trans, 'params'),
         '<LinearParams>': (_read_matrix_trans, 'params'),
         '<BiasParams>': (_read_vector_float, 'bias'),
-        '<MaxChange>': (_read_float, 'max_change'),
-        '<RankIn>': (_read_int, 'rank_in'),
-        '<RankOut>': (_read_int, 'rank_out'),
-        '<UpdatedPeriod>': (_read_int, 'updated_period'),
-        '<NumSamplesHistory>': (_read_float, 'num_samples_history'),
-        '<Alpha>': (_read_float, 'alpha'),
-        '<NumRepeats>': (_read_int, 'num_repeats'),
-        '<NumBlocks>': (_read_int, 'num_blocks'),
     }
     return actions
 
 
-class FixedAffineComponent(AffineComponent):
-  """FixedAffineComponent."""
-
-
-class NaturalGradientAffineComponent(AffineComponent):
-  """FixedAffineComponent."""
-
-
 class BatchNormComponent(Component):
-  """BatchNormComponent."""
+  """BatchNorm component."""
 
   def _actions(self) -> Dict[str, Tuple]:
     """See parent class document."""
     actions = {
         '<Dim>': (_read_int, 'dim'),
-        '<BlockDim>': (_read_int, 'block_dim'),
         '<Epsilon>': (_read_float, 'epsilon'),
         '<TargetRms>': (_read_float, 'target_rms'),
-        '<Count>': (_read_float, 'count'),
         '<StatsMean>': (_read_vector_float, 'stats_mean'),
         '<StatsVar>': (_read_vector_float, 'stats_var'),
-        '<TestMode>': (_read_bool, 'test_mode'),
     }
     return actions
 
@@ -175,46 +340,6 @@ class BatchNormComponent(Component):
     scale = np.multiply(self._attrs["target_rms"], np.power(add_eps, -0.5))
     self._attrs["stats_mean"] = scale
     self._attrs["stats_var"] = -np.multiply(scale, self._attrs["stats_mean"])
-
-
-class LinearComponent(Component):
-  """LinearComponent."""
-
-  def _actions(self) -> Dict[str, Tuple]:
-    """See parent class document."""
-    actions = {
-        '<Params>': (_read_matrix_trans, 'params'),
-        '<RankInOut>': (_read_int, 'rank_inout'),
-        '<UpdatedPeriod>': (_read_int, 'updated_period'),
-        '<NumSamplesHistory>': (_read_float, 'num_samples_history'),
-        '<Alpha>': (_read_float, 'alpha')
-    }
-    return actions
-
-
-class NonlinearComponent(Component):
-  """NonlinearComponent."""
-
-  def _actions(self) -> Dict[str, Tuple]:
-    """See parent class document."""
-    actions = {
-        '<Dim>': (_read_int, 'dim'),
-        '<BlockDim>': (_read_int, 'block_dim'),
-        '<ValueAvg>': (_read_vector_float, 'value_avg'),
-        '<DerivAvg>': (_read_vector_float, 'deriv_avg'),
-        '<OderivRms>': (_read_vector_float, 'oderiv_rms'),
-        '<Count>': (_read_float, 'count'),
-        '<OderivCount>': (_read_float, 'oderiv_count')
-    }
-    return actions
-
-
-class LogSoftmaxComponent(NonlinearComponent):
-  """LogSoftmaxComponent."""
-
-
-class RectifiedLinearComponent(NonlinearComponent):
-  """RectifiedLinearComponent."""
 
 
 class TdnnComponent(Component):
@@ -230,26 +355,22 @@ class TdnnComponent(Component):
         '<UseNaturalGradient>': (_read_bool, 'use_natrual_gradient'),
         '<RankInOut>': (_read_int, 'rank_inout'),
         '<NumSamplesHistory>': (_read_float, 'num_samples_history'),
-        '<Alpha>': (_read_float, 'alpha'),
         '<AlphaInOut>': (_read_float, 'alpha_inout'),
     }
     return actions
 
 
-@unique
 class Components(Enum):
-  """Kaldi nnet3 Components."""
+  """Kaldi nnet3 components."""
 
   AffineComponent = AffineComponent
   BatchNormComponent = BatchNormComponent
-  FixedAffineComponent = FixedAffineComponent
-  GeneralDropoutComponent = GeneralDropoutComponent
-  LinearComponent = LinearComponent
-  LogSoftmaxComponent = LogSoftmaxComponent
-  NaturalGradientAffineComponent = NaturalGradientAffineComponent
-  NonlinearComponent = NonlinearComponent
-  NoOpComponent = NoOpComponent
-  RectifiedLinearComponent = RectifiedLinearComponent
+  FixedAffineComponent = AffineComponent
+  GeneralDropoutComponent = Component
+  LinearComponent = AffineComponent
+  NaturalGradientAffineComponent = AffineComponent
+  NoOpComponent = Component
+  RectifiedLinearComponent = Component
   TdnnComponent = TdnnComponent
 
 
