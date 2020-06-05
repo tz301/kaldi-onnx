@@ -1,4 +1,4 @@
-# Kaldi-ONNX-Tensorflow Converter (Developing)
+# Kaldi-ONNX-Tensorflow Converter (Developing...)
 
 This is a tool for converting [Kaldi](https://github.com/kaldi-asr/kaldi) model to onnx / tensorflow model for inference based on XiaoMi's [Kaldi-ONNX](https://github.com/XiaoMi/kaldi-onnx) project.
 
