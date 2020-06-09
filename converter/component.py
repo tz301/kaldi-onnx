@@ -343,7 +343,7 @@ class BatchNormComponent(Component):
 
 
 class TdnnComponent(Component):
-  """TdnnComponent."""
+  """Tdnn component."""
 
   def _actions(self) -> Dict[str, Tuple]:
     """See parent class document."""
@@ -371,6 +371,7 @@ class Components(Enum):
   NaturalGradientAffineComponent = AffineComponent
   NoOpComponent = Component
   RectifiedLinearComponent = Component
+  LogSoftmaxComponent = Component
   TdnnComponent = TdnnComponent
 
 
