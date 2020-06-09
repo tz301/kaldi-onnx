@@ -14,6 +14,7 @@ _COMPONENT_ONNX_TYPE = {
   'GeneralDropoutComponent': 'Identity',
   'NoOpComponent': 'Identity',
   'RectifiedLinearComponent': 'Relu',
+  'LogSoftmaxComponent': 'LogSoftmax',
 }
 
 
@@ -228,7 +229,7 @@ class Parser:
     if len(nums) == 1:
       return nums
 
-    new_nums = list()
+    new_nums = []
     first = nums[0]
     pre = nums[0]
     new_nums.append([first])
@@ -448,7 +449,7 @@ class Parser:
     items = self.__parenthesis_split(input_str)
     kaldi_check(len(items) == 2, 'Sum descriptor should have 2 items.')
 
-    input_names = list()
+    input_names = []
     for item in items:
       sub_type = self.__parse_sub_type(item)
       if sub_type is not None:
@@ -488,6 +489,7 @@ class Parser:
           raise ValueError(f"Cannot find component {component_name}.")
 
         component_type = component_type_str[1:-1]
+        num += 1
         if component_type in self.__type_to_component:
           if component_type in _COMPONENT_ONNX_TYPE:
             component.type = _COMPONENT_ONNX_TYPE[component_type]
@@ -498,7 +500,6 @@ class Parser:
 
           end_tokens = {f'</{component_type_str[1:]}', '<ComponentName>'}
           component.read_attributes(self.__line_buffer, line, pos, end_tokens)
-          num += 1
         else:
           msg = f'Component: {component_type_str} not supported.'
           raise NotImplementedError(msg)
