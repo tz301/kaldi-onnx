@@ -7,8 +7,9 @@ from typing import Dict, List, Union
 
 from onnx import checker, helper, ModelProto, numpy_helper, onnx_pb
 
-from converter.node import KaldiNode, make_kaldi_node
-from converter.utils import kaldi_check, KaldiOpType
+from converter.component import Component
+from converter.node import AppendNode, NODE_TYPE, NODE_TYPES, SubsampleNode
+from converter.utils import kaldi_check
 
 # For nnet3, kaldi's default configure is input 21 frames feature, and output
 # 7 frames for decoding. with a subsample factor of 3.
@@ -39,7 +40,6 @@ class Graph:
     __name_to_dependencies: {node name: dependencies}.
     __name_to_output_indexes: {node name: output indexes}.
     __name_to_input_tensor: {node name: input tensor}.
-    __model_outputs: model output name list, not including initializers.
     __all_inputs: input name list of all nodes.
     __internal_inputs: internal input tensor list, for showing info on graph.
     __initializers: initializer tensor list.
@@ -50,7 +50,7 @@ class Graph:
   """
 
   def __init__(self,
-               nodes: List[KaldiNode],
+               nodes: NODE_TYPES,
                inputs: List[str],
                outputs: List[str],
                name_to_input_dim: Dict[str, int],
@@ -81,7 +81,6 @@ class Graph:
     self.__name_to_output_indexes = dict()
     self.__name_to_input_tensor = dict()
 
-    self.__model_outputs = outputs
     self.__all_inputs = []
     self.__internal_inputs = []
     self.__initializers = []
@@ -133,7 +132,7 @@ class Graph:
 
     self.__nodes = updated_nodes
     for node in self.__nodes:
-      del node.nexts
+      node.nexts = []
 
     for node in self.__nodes:
       self.__name_to_node[node.name] = node
@@ -145,22 +144,6 @@ class Graph:
     self.__name_to_node.clear()
     for node in self.__nodes:
       self.__name_to_node[node.name] = node
-
-  def __initialize_model_inputs_outputs(self) -> None:
-    """Initialize model inputs and outputs, not include consts."""
-    logging.info('Initialize model inputs and outputs.')
-    node_inputs = []
-    node_outputs = []
-    for node in self.__nodes:
-      for name in node.inputs:
-        if name not in self.__name_to_const:
-          node_inputs.append(name)
-      node_outputs.extend(node.outputs)
-
-    model_inputs = {i for i in node_inputs if i not in node_outputs}
-    model_outputs = {o for o in node_outputs if o not in node_inputs}
-    self.__model_inputs = list(model_inputs)
-    self.__model_outputs = list(model_outputs)
 
   def __inference_ranges(self) -> None:
     """Inference input range and output range for all nodes."""
@@ -174,15 +157,21 @@ class Graph:
       node.inference_ranges(self.__name_to_node, name_to_input_range)
 
   def __infer_node_dependencies(self,
-                                node: KaldiNode,
+                                node: NODE_TYPE,
                                 output_indexes: List[int]
                                 ) -> None:
-    """Inference dependencies for one node."""
+    """Inference dependencies for one node.
+
+    Args:
+      node: kaldi node.
+      output_indexes: output index list of node.
+    """
     node.inference_dependencies(output_indexes,
                                 self.__name_to_node,
                                 self.__name_to_dependencies,
                                 self.__subsample_factor)
     current_dependencies = node.dependencies
+
     for input_name in node.inputs:
       if input_name in self.__name_to_node:
         input_node = self.__name_to_node[input_name]
@@ -194,17 +183,17 @@ class Graph:
   def __inference_dependencies(self) -> None:
     """Inference dependencies for all nodes."""
     logging.info('Inference dependencies.')
-    final_output_indexes = list()
-    i = 0
-    while i < self.__chunk_size:
+    final_output_indexes = []
+    for i in range(0, self.__chunk_size, self.__subsample_factor):
       final_output_indexes.append(i)
-      i += self.__subsample_factor
 
-    for name in self.__model_outputs:
-      output_indexes = final_output_indexes
+    for name in self.__outputs:
       if name in self.__name_to_node:
         node = self.__name_to_node[name]
-        self.__infer_node_dependencies(node, output_indexes)
+        self.__infer_node_dependencies(node, final_output_indexes)
+
+    for node in self.__nodes:
+      node.dependencies = sorted(list(set(node.dependencies)))
 
   def __inference_input_indexes(self) -> None:
     """Inference input and output indexes for all nodes."""
@@ -220,69 +209,84 @@ class Graph:
       node.inference_input_indexes(self.__name_to_node,
                                    self.__name_to_output_indexes)
 
+  @staticmethod
+  def __subsample_node(name: str, input_name: str) -> SubsampleNode:
+    """Make subsample node.
+
+    Args:
+      name: node name.
+      input_name: input node name of node.
+
+    Returns:
+      Subsample node.
+    """
+    component = Component(0, name, [input_name])
+    return SubsampleNode(component)
+
+  def __simple_subsample_node(self,
+                              name: str,
+                              input_name: str,
+                              node: NODE_TYPE
+                              ) -> SubsampleNode:
+    """Make simple subsample node.
+
+    Args:
+      name: node name.
+      input_name: input node name of node.
+      node: node.
+
+    Returns:
+      Subsample node.
+    """
+    subsample_node = self.__subsample_node(name, input_name)
+    subsample_node.input_indexes = node.input_indexes
+    subsample_node.output_indexes = node.output_indexes
+    return subsample_node
+
   def __add_subsample_nodes(self) -> None:
     """Add subsample nodes."""
     logging.info('Add subsample nodes.')
-    subsample_nodes = dict()
+    name_to_subsample_node = dict()
     for node in self.__nodes:
-      if node.allow_subsample():
-        input_indexes = node.input_indexes
-        output_indexes = node.output_indexes
-        if len(output_indexes) < len(input_indexes):
-          input_name = node.inputs[0]
-          subsample_name = input_name + '.subsample.' + node.name
-          if subsample_name not in subsample_nodes:
-            subsample_inputs = [input_name]
-            subsample_node = make_kaldi_node(KaldiOpType.Subsample,
-                                             subsample_name,
-                                             subsample_inputs,
-                                             [subsample_name])
-            subsample_node.input_indexes = input_indexes
-            subsample_node.output_indexes = output_indexes
-            subsample_nodes[subsample_name] = subsample_node
-          else:
-            subsample_node = subsample_nodes[subsample_name]
-            if set(output_indexes) != set(subsample_node.output_indexes):
-              subsample_inputs = [input_name]
-              subsample_name = node.name + subsample_name
-              subsample_node = make_kaldi_node(KaldiOpType.Subsample,
-                                               subsample_name,
-                                               subsample_inputs,
-                                               [subsample_name])
-              subsample_node.input_indexes = input_indexes
-              subsample_node.output_indexes = output_indexes
-              subsample_nodes[subsample_name] = subsample_node
-          node.input_indexes = output_indexes
-          node.inputs[0] = subsample_name
-      elif node.type == KaldiOpType.Append.name:
-        dependencies = node.dependencies
+      input_indexes = node.input_indexes
+      output_indexes = node.output_indexes
+      if node.allow_subsample() and len(output_indexes) < len(input_indexes):
+        input_name = node.inputs[0]
+        name = f'{input_name}.Subsample.{node.name}'
+        if name not in name_to_subsample_node:
+          ss_node = self.__simple_subsample_node(name, input_name, node)
+          name_to_subsample_node[name] = ss_node
+        else:
+          ss_node = name_to_subsample_node[name]
+          if set(node.output_indexes) != set(ss_node.output_indexes):
+            name = node.name + name
+            ss_node = self.__subsample_node(name, input_name)
+            name_to_subsample_node[name] = ss_node
+        node.input_indexes = node.output_indexes
+        node.inputs[0] = name
+      elif isinstance(node, AppendNode):
         for i in range(len(node.inputs)):
           input_name = node.inputs[i]
           if (input_name in self.__name_to_node or
               input_name in self.__name_to_output_indexes):
             if input_name in self.__name_to_node:
-              input_node = self.__name_to_node[input_name]
-              output_indexes = input_node.output_indexes
+              output_indexes = self.__name_to_node[input_name].output_indexes
             else:
               output_indexes = self.__name_to_output_indexes[input_name]
 
-            if set(dependencies) < set(output_indexes):
-              subsample_name = input_name + '.subsample.' + node.name
-              if subsample_name not in subsample_nodes:
-                subsample_inputs = [input_name]
-                subsample_node = make_kaldi_node(KaldiOpType.Subsample,
-                                                 subsample_name,
-                                                 subsample_inputs,
-                                                 [subsample_name])
-                subsample_node.input_indexes = output_indexes
-                subsample_node.output_indexes = dependencies
-                subsample_node.dependencies = output_indexes
-                node.input_indexes = dependencies
-                node.inputs[i] = subsample_name
-                subsample_nodes[subsample_name] = subsample_node
+            if set(node.dependencies) < set(output_indexes):
+              name = f'{input_name}.Subsample.{node.name}'
+              if name not in name_to_subsample_node:
+                ss_node = self.__subsample_node(name, input_name)
+                ss_node.input_indexes = output_indexes
+                ss_node.output_indexes = node.dependencies
+                ss_node.dependencies = output_indexes
+                node.input_indexes = node.dependencies
+                node.inputs[i] = name
+                name_to_subsample_node[name] = ss_node
 
-    if len(subsample_nodes) > 0:
-      for name, node in subsample_nodes.items():
+    if len(name_to_subsample_node) > 0:
+      for name, node in name_to_subsample_node.items():
         self.__nodes.append(node)
         self.__name_to_node[name] = node
       self.__initialize_inputs_outputs()
@@ -426,9 +430,8 @@ class Graph:
     self.__initialize_consts()
     self.__initialize_inputs_outputs()
     self.__reorder_nodes()
-    self.__initialize_model_inputs_outputs()
     self.__inference_ranges()
-    self.__inference_dependencies()  # TODO(tz): dependencies and output拆开.
+    self.__inference_dependencies()
     self.__inference_input_indexes()
     self.__add_subsample_nodes()
     self.__pre_compute()
