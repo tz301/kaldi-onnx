@@ -85,16 +85,16 @@ class KaldiNode:
     input_shape: input shape of node.
     input_range: input range of node, [begin, end].
     output_range: output range of node, [begin, end].
+    forward_indexes: forward index list for compute.
+    dependencies: dependencies of node.
     nexts: next nodes.
     __onnx_type: onnx type, will be used to make onnx node.
     __inputs: input name list of node.
     __outputs: output name list of node.
     __input_dim: input dim of node.
     __output_dim: output dim of node.
-    __dependencies: dependencies of node.
     __input_indexes: input indexes of node.
     __output_indexes: output indexes of node.
-
   """
 
   def __init__(self, component: COMPONENT_TYPE) -> None:
@@ -109,14 +109,15 @@ class KaldiNode:
     self.input_shape = None
     self.input_range = [-100000, 100000]
     self.output_range = [-100000, 100000]
+    self.dependencies = []
+    self.forward_indexes = []
     self.nexts = []
 
     self.__onnx_type = component.type
     self.__inputs = component.inputs
     self.__outputs = [component.name]
-    self.__input_dim = component.dim
+    self.__input_dim = component.dim if component.dim else 0
     self.__output_dim = 0
-    self.__dependencies = []
     self.__input_indexes = []
     self.__output_indexes = []
 
@@ -155,24 +156,6 @@ class KaldiNode:
       outputs: output node names.
     """
     self.__outputs = outputs
-
-  @property
-  def dependencies(self) -> List[int]:
-    """Get dependencies.
-
-    Returns:
-      dependencies.
-    """
-    return self.__dependencies
-
-  @dependencies.setter
-  def dependencies(self, dependencies: List[int]) -> None:
-    """Set dependencies.
-
-    Args:
-      dependencies: dependencies for node.
-    """
-    self.__dependencies = dependencies
 
   @property
   def input_indexes(self) -> List[int]:
@@ -253,9 +236,18 @@ class KaldiNode:
     """If subsample is allowed.
 
     Returns:
-      If subsample is allowed.
+      If subsample is allowed, default is True.
     """
     return True
+
+  @staticmethod
+  def _multi_inputs() -> bool:
+    """If node has multi inputs.
+
+    Returns:
+      If node has multi inputs, default is False.
+    """
+    return False
 
   def _err_msg(self, func_name: str, message: str) -> str:
     """Get error message string.
@@ -269,8 +261,46 @@ class KaldiNode:
     """
     return f'{self.name} {func_name} error: {message}'
 
+  def __inference_input_range(self,
+                              name_to_node: Dict[str, 'NODE_TYPE'],
+                              name_to_input_range: Dict[str, List[int]]
+                              ) -> None:
+    """Inference node input range, range is [begin, end].
+
+    Args:
+      name_to_input_range: {node name: input range}.
+      name_to_node: {node name: Node}.
+    """
+    inputs = self.inputs if self._multi_inputs() else [self.inputs[0]]
+    [start, end] = self.input_range
+    for input_name in inputs:
+      if input_name in name_to_input_range:
+        [input_start, input_end] = name_to_input_range[input_name]
+      else:
+        msg = self._err_msg('inference ranges', f'cannot find {input_name}.')
+        kaldi_check(input_name in name_to_node, msg)
+
+        input_node = name_to_node[input_name]
+        input_node.inference_ranges(name_to_node, name_to_input_range)
+        [input_start, input_end] = input_node.output_range
+
+      start = max(start, input_start)
+      end = min(end, input_end)
+    self.input_range = [start, end]
+
+  def _inference_output_range(self,
+                              name_to_input_range: Dict[str, List[int]]
+                              ) -> None:
+    """Inference node output range, range is [begin, end].
+
+    Args:
+      name_to_input_range: {node name: input range}.
+    """
+    self.output_range = self.input_range
+    name_to_input_range[self.name] = self.input_range
+
   def inference_ranges(self,
-                       name_to_node: Dict[str, 'KaldiNode'],
+                       name_to_node: Dict[str, 'NODE_TYPE'],
                        name_to_input_range: Dict[str, List[int]]
                        ) -> None:
     """Inference node input range and output range, range is [begin, end].
@@ -280,20 +310,8 @@ class KaldiNode:
       name_to_node: {node name: Node}.
     """
     if self.name not in name_to_input_range:
-      input_name = self.inputs[0]
-      if input_name in name_to_input_range:
-        [start, end] = name_to_input_range[input_name]
-      else:
-        msg = self._err_msg('inference ranges', f'cannot find {input_name}.')
-        kaldi_check(input_name in name_to_node, msg)
-
-        input_node = name_to_node[input_name]
-        input_node.inference_ranges(name_to_node, name_to_input_range)
-        [start, end] = input_node.output_range
-
-      name_to_input_range[self.name] = [start, end]
-      self.input_range = [start, end]
-      self.output_range = [start, end]
+      self.__inference_input_range(name_to_node, name_to_input_range)
+      self._inference_output_range(name_to_input_range)
 
   def inference_dependencies(self,
                              output_indexes: List[int],
@@ -380,12 +398,6 @@ class KaldiNode:
     """
     if self.name in name_to_input_dim:
       self.input_dim = name_to_input_dim[self.name]
-    elif 'output_dim' in self.attrs:
-      self.input_dim = self.attrs['output_dim']
-    elif 'dim' in self.attrs:
-      self.input_dim = self.attrs['dim']
-    elif 'input_dim' in self.attrs:
-      self.input_dim = self.attrs['input_dim']
     else:
       input_name = self.inputs[0]
       if input_name in name_to_input_dim:
@@ -426,30 +438,9 @@ class AppendNode(KaldiNode):
     """See parent class document."""
     return False
 
-  def inference_ranges(self,
-                       name_to_node: Dict[str, 'KaldiNode'],
-                       name_to_input_range: Dict[str, List[int]]
-                       ) -> None:
+  def _multi_inputs(self) -> bool:
     """See parent class document."""
-    if self.name not in name_to_input_range:
-      [start, end] = self.input_range
-      for input_name in self.inputs:
-        if input_name in name_to_input_range:
-          [input_start, input_end] = name_to_input_range[input_name]
-        else:
-          msg = self._err_msg('inference ranges', f'cannot find {input_name}.')
-          kaldi_check(input_name in name_to_node, msg)
-
-          input_node = name_to_node[input_name]
-          input_node.inference_ranges(name_to_node, name_to_input_range)
-          [input_start, input_end] = input_node.output_range
-
-        start = max(start, input_start)
-        end = min(end, input_end)
-
-      self.input_range = [start, end]
-      self.output_range = [start, end]
-      name_to_input_range[self.name] = [start, end]
+    return True
 
   def _inference_input_indexes(self,
                                name_to_node: Dict[str, 'KaldiNode'],
@@ -464,7 +455,8 @@ class AppendNode(KaldiNode):
 
   def inference_dims(self,
                      name_to_input_dim: Dict[str, int],
-                     name_to_node: Dict[str, 'KaldiNode']) -> None:
+                     name_to_node: Dict[str, 'KaldiNode']
+                     ) -> None:
     """See parent class document."""
     output_dim = 0
     for input_name in self.inputs:
@@ -505,27 +497,12 @@ class OffsetNode(KaldiNode):
     """See parent class document."""
     return False
 
-  def inference_ranges(self,
-                       name_to_node: Dict[str, 'KaldiNode'],
-                       name_to_input_range: Dict[str, List[int]]
-                       ) -> None:
+  def _inference_output_range(self,
+                              name_to_input_range: Dict[str, List[int]]
+                              ) -> None:
     """See parent class document."""
-    if self.name not in name_to_input_range:
-      offset = self.attrs['offset']
-      input_name = self.inputs[0]
-      if input_name in name_to_input_range:
-        [input_start, input_end] = name_to_input_range[input_name]
-      else:
-        msg = self._err_msg('inference ranges', f'Cannot find {input_name}.')
-        kaldi_check(input_name in name_to_node, msg)
-
-        input_node = name_to_node[input_name]
-        input_node.inference_ranges(name_to_node, name_to_input_range)
-        [input_start, input_end] = input_node.output_range
-
-      self.input_range = [input_start, input_end]
-      self.output_range = [input_start - self.__offset, input_end - self.__offset]
-      name_to_input_range[self.name] = self.output_range
+    self.output_range = [r - self.__offset for r in self.input_range]
+    name_to_input_range[self.name] = self.output_range
 
   def inference_dependencies(self,
                              output_indexes: List[int],
@@ -537,7 +514,7 @@ class OffsetNode(KaldiNode):
     msg = self._err_msg('Inference dependencies', 'No available output index.')
     kaldi_check(len(output_indexes) > 0, msg)
 
-    dependencies = [i + self.attrs['offset'] for i in output_indexes]
+    dependencies = [i + self.__offset for i in output_indexes]
     if self.name in name_to_dependencies:
       dependencies.extend(name_to_dependencies[self.name])
 
@@ -547,13 +524,13 @@ class OffsetNode(KaldiNode):
 
   def __pre_compute(self) -> None:
     """See parent class document."""
-    forward_indexes = list()
+    forward_indexes = []
     for output_index in self.output_indexes:
-      depend = output_index + self.attrs['offset']
+      depend = output_index + self.__offset
       forward_indexes.append(self.input_indexes.index(depend))
       msg = self._err_msg('Pre compute', f'Input index {depend} is required.')
       kaldi_check(depend in self.input_indexes, msg)
-    self.attrs['forward_indexes'] = forward_indexes
+    self.forward_indexes = forward_indexes
 
   def onnx_nodes(self) -> OnnxNodes:
     """See parent class document."""
@@ -564,6 +541,28 @@ class OffsetNode(KaldiNode):
         self.attrs['forward_indexes'])
 
 
+def _get_forward_indexes(name: str,
+                         input_indexes: List[int],
+                         output_indexes: List[int]
+                         ) -> List[int]:
+  """Get forward index list for pre compute.
+
+  Args:
+    name: node name.
+    input_indexes: input index list of node.
+    output_indexes: output index list of node.
+
+  Returns:
+    Forward index list.
+  """
+  forward_indexes = []
+  for idx in output_indexes:
+    msg = f'{name} pre compute error: cannot compute index {idx}.'
+    kaldi_check(idx in input_indexes, msg)
+    forward_indexes.append(input_indexes.index(idx))
+  return forward_indexes
+
+
 class ReplaceIndexNode(KaldiNode):
   """ReplaceIndex node."""
 
@@ -571,62 +570,10 @@ class ReplaceIndexNode(KaldiNode):
     """See parent class document."""
     return False
 
-  def inference_ranges(self,
-                       name_to_node: Dict[str, 'KaldiNode'],
-                       name_to_input_range: Dict[str, List[int]]
-                       ) -> None:
+  def pre_compute(self) -> None:
     """See parent class document."""
-    if self.name not in name_to_input_range:
-      left_context = self.attrs['left_context']
-      right_context = self.attrs['right_context']
-      chunk_size = self.attrs['chunk_size']
-      mod = left_context % chunk_size
-      input_start = (-left_context // chunk_size) * chunk_size
-      if mod > 0:
-        input_start -= chunk_size
-      input_end = chunk_size + right_context - 1
-      input_end = (input_end // chunk_size) * chunk_size
-      start = input_start
-      end = input_end + chunk_size - 1
-      self.input_range = [input_start, input_end]
-      self.output_range = [start, end]
-      name_to_input_range[self.name] = [start, end]
-
-  def inference_dependencies(self,
-                             output_indexes: List[int],
-                             name_to_node: Dict[str, 'KaldiNode'],
-                             name_to_dependencies: Dict[str, List[int]],
-                             subsample_factor: int
-                             ) -> None:
-    """See parent class document."""
-    msg = self._err_msg('inference dependencies', 'No available output index.')
-    kaldi_check(len(output_indexes) > 0, msg)
-
-    dependencies = list()
-    chunk_size = self.attrs['chunk_size']
-    for i in output_indexes:
-      depend = chunk_size * (i // chunk_size)
-      dependencies.append(depend)
-    if self.name in name_to_dependencies:
-      dependencies.extend(name_to_dependencies[self.name])
-    dependencies = list(set(dependencies))
-    dependencies.sort()
-    name_to_dependencies[self.name] = dependencies
-    self.dependencies = dependencies
-    output_indexes = list(set(output_indexes))
-    output_indexes.sort()
-    self.output_indexes = output_indexes
-
-  def pre_compute(self):
-    forward_indexes = list()
-    modulus = self.attrs['chunk_size']
-    for idx in self.output_indexes:
-      dep = int(idx // modulus) * modulus
-      kaldi_check(dep in self.input_indexes,
-                  f'{self.name} cannot compute index: {dep}.')
-      pos = self.input_indexes.index(dep)
-      forward_indexes.append(pos)
-    self.attrs['forward_indexes'] = forward_indexes
+    self.forward_indexes = _get_forward_indexes(self.name, self.input_indexes,
+                                                self.output_indexes)
 
 
 class ScaleNode(KaldiNode):
@@ -668,28 +615,14 @@ class SpliceNode(KaldiNode):
     """See parent class document."""
     return False
 
-  def inference_ranges(self,
-                       name_to_node: Dict[str, 'KaldiNode'],
-                       name_to_input_range: Dict[str, List[int]]) -> None:
+  def _inference_output_range(self,
+                              name_to_input_range: Dict[str, List[int]]
+                              ) -> None:
     """See parent class document."""
-    if self.name not in name_to_input_range:
-      left_context = self.__context[0]
-      right_context = self.__context[-1]
-      input_name = self.inputs[0]
-      if input_name in name_to_input_range:
-        [input_start, input_end] = name_to_input_range[input_name]
-      else:
-        kaldi_check(input_name in name_to_node, f'Cannot find {input_name}.')
-
-        input_node = name_to_node[input_name]
-        input_node.inference_ranges(name_to_node, name_to_input_range)
-        [input_start, input_end] = input_node.output_range
-        self.input_range = [input_start, input_end]
-      output_start = input_start - left_context
-      output_end = input_end - right_context
-      self.input_range = [input_start, input_end]
-      self.output_range = [output_start, output_end]
-      name_to_input_range[self.name] = self.output_range
+    start = self.input_range[0] - self.__context[0]
+    end = self.input_range[1] - self.__context[-1]
+    self.output_range = [start, end]
+    name_to_input_range[self.name] = self.output_range
 
   def inference_dependencies(self,
                              output_indexes: List[int],
@@ -701,53 +634,43 @@ class SpliceNode(KaldiNode):
     msg = self._err_msg('inference dependencies', 'No available output index.')
     kaldi_check(len(output_indexes) > 0, msg)
 
-    dependencies = list()
+    dependencies = []
     for i in output_indexes:
       dependencies.extend([i + c for c in self.__context])
 
     if self.name in name_to_dependencies:
       dependencies.extend(name_to_dependencies[self.name])
-    dependencies = list(set(dependencies))
-    dependencies.sort()
-    name_to_dependencies[self.name] = dependencies
-    input_indexes = list(dependencies)
-    self.dependencies = input_indexes
+
+    self.dependencies = sorted(list(set(dependencies)))
+    name_to_dependencies[self.name] = self.dependencies
+
     new_output_indexes = output_indexes
     new_output_indexes.extend(self.output_indexes)
-    new_output_indexes = list(set(new_output_indexes))
-    new_output_indexes.sort()
-    self.output_indexes = new_output_indexes
+    self.output_indexes = sorted(list(set(new_output_indexes)))
 
-  def pre_compute(self):
-    forward_indexes = list()
-    forward_const_indexes = list()
-    for idx in self.output_indexes:
-      computed_indexes = [idx + c for c in self.__context]
-      kaldi_check(set(computed_indexes) <= set(self.input_indexes),
-                  'Splice is not computable.')
+  def pre_compute(self) -> None:
+    """See parent class document."""
+    for output_index in self.output_indexes:
+      computed_indexes = [output_index + c for c in self.__context]
+      msg = self._err_msg('Pre compute', f'Splice is not computable.')
+      kaldi_check(set(computed_indexes) <= set(self.input_indexes), msg)
       forward_index = [self.input_indexes.index(i) for i in computed_indexes]
-      forward_indexes.extend(forward_index)
-    self.attrs['forward_indexes'] = forward_indexes
+      self.forward_indexes.extend(forward_index)
 
   def inference_dims(self,
                      name_to_input_dim: Dict[str, int],
                      name_to_node: Dict[str, 'KaldiNode']
                      ) -> None:
     """See parent class document."""
-    if 'output_dim' in self.attrs:
-      output_dim = self.attrs['output_dim']
+    input_name = self.inputs[0]
+    if input_name in name_to_input_dim:
+      input_dim = name_to_input_dim[input_name]
     else:
-      input_name = self.inputs[0]
-      if input_name in name_to_input_dim:
-        input_dim = name_to_input_dim[input_name]
-      else:
-        kaldi_check(input_name in name_to_node,
-                    f'Cannot find {input_name}')
-        input_node = name_to_node[input_name]
-        input_node.inference_dims(name_to_input_dim, name_to_node)
-        input_dim = input_node.output_dim
-      context = self.attrs['context']
-      output_dim = input_dim * len(context)
+      kaldi_check(input_name in name_to_node, f'Cannot find {input_name}')
+      input_node = name_to_node[input_name]
+      input_node.inference_dims(name_to_input_dim, name_to_node)
+      input_dim = input_node.output_dim
+    output_dim = input_dim * len(self.__context)
     self.output_dim = output_dim
     name_to_input_dim[self.name] = output_dim
 
@@ -759,8 +682,9 @@ class SumNode(KaldiNode):
     """See parent class document."""
     return False
 
-  def infer_range(self, nodes_by_name, ranges_by_name):
-    self._infer_range_by_intersection(nodes_by_name, ranges_by_name)
+  def _multi_inputs(self) -> bool:
+    """See parent class document."""
+    return True
 
 
 class AffineNode(KaldiNode):
@@ -775,7 +699,7 @@ class AffineNode(KaldiNode):
     kaldi_check(weights_name in self.consts, msg)
 
     weights_shape = self.consts[weights_name].shape
-    self.output_dim = weights_shape[0]
+    self.output_dim = weights_shape[1]
     name_to_input_dim[self.name] = self.output_dim
 
   def onnx_nodes(self) -> OnnxNodes:
@@ -881,7 +805,7 @@ def _onnx_nodes_by_forward_indexes(node_name: str,
     start_indexes = forward_indexes[0:2]
     step = forward_indexes[2] - start_indexes[0]
 
-    simulated_indexes = list()
+    simulated_indexes = []
     for j in range(int(len(forward_indexes) / 2)):
       simulated_indexes.extend([b + j * step for b in start_indexes])
 
@@ -927,11 +851,13 @@ def _onnx_nodes_by_forward_indexes(node_name: str,
 class SubsampleNode(KaldiNode):
   """Subsample node."""
 
-  def pre_compute(self):
-    forward_indexes = list()
-    for idx in self.output_indexes:
-      kaldi_check(idx in self.input_indexes,
-                  f'{self.name} cannot compute index: {idx}')
-      pos = self.input_indexes.index(idx)
-      forward_indexes.append(pos)
-    self.attrs['forward_indexes'] = forward_indexes
+  def pre_compute(self) -> None:
+    """See parent class document."""
+    self.forward_indexes = _get_forward_indexes(self.name, self.input_indexes,
+                                                self.output_indexes)
+
+
+NODE_TYPE = Union[KaldiNode, AppendNode, OffsetNode, ReplaceIndexNode,
+                  ScaleNode, SpliceNode, SumNode, AffineNode, BatchNormNode,
+                  SubsampleNode]
+NODE_TYPES = List[NODE_TYPE]
