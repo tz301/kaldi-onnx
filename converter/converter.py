@@ -81,7 +81,7 @@ class Converter:
 
   def __convert_components_to_nodes(self,
                                     components: List[Component]
-                                    ) -> List[KaldiNode]:
+                                    ) -> NODE_TYPES:
     """Convert all kaldi's nnet3 components to kaldi nodes.
 
     Args:
@@ -99,10 +99,6 @@ class Converter:
       elif isinstance(component, OutputComponent):
         self.__outputs.extend(component.inputs)
       else:
-        if isinstance(component, ReplaceIndexComponent):
-          component['chunk_size'] = self.__chunk_size
-          component['left_context'] = self.__left_context
-          component['right_context'] = self.__right_context
         nodes.append(_COMPONENT_TO_NODE[component.__class__](component))
     return nodes
 
