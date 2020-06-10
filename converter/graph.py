@@ -3,12 +3,10 @@
 # Created by tz301 on 2020/05/26
 """Graph build."""
 import logging
-from typing import Dict, List, Union
 
 from onnx import checker, helper, ModelProto, numpy_helper, onnx_pb
 
-from converter.component import Component
-from converter.node import AppendNode, NODE_TYPE, NODE_TYPES, SubsampleNode
+from converter.node import *
 from converter.utils import kaldi_check
 
 # For nnet3, kaldi's default configure is input 21 frames feature, and output
@@ -35,17 +33,16 @@ class Graph:
     __left_context: left context.
     __right_context: right context.
     __name_to_const: {node name: const}.
-    __name_to_shape: {node name: shape}.
+    __name_to_output_shape: {node name: output shape}.
     __name_to_node: {node name: node}.
     __name_to_dependencies: {node name: dependencies}.
     __name_to_output_indexes: {node name: output indexes}.
     __name_to_input_tensor: {node name: input tensor}.
-    __all_inputs: input name list of all nodes.
+    __name_to_output_tensor: {node name: output tensor}.
     __internal_inputs: internal input tensor list, for showing info on graph.
     __initializers: initializer tensor list.
     __input_with_initializers: input tensor with initializer tensor list.
     __onnx_nodes: onnx node list.
-    __output_tensors: output tensor list.
     __subsample_factor: subsample factor.
   """
 
@@ -75,18 +72,17 @@ class Graph:
     self.__right_context = right_context
 
     self.__name_to_const = dict()
-    self.__name_to_shape = dict()
+    self.__name_to_output_shape = dict()
     self.__name_to_node = dict()
     self.__name_to_dependencies = dict()
     self.__name_to_output_indexes = dict()
     self.__name_to_input_tensor = dict()
+    self.__name_to_output_tensor = dict()
 
-    self.__all_inputs = []
     self.__internal_inputs = []
     self.__initializers = []
     self.__input_with_initializers = []
-    self.__onnx_nodes = []
-    self.__output_tensors = []
+    self.__onnx_nodes = OnnxNodes()
     self.__chunk_size = _CHUNK_SIZE
     self.__subsample_factor = _SUBSAMPLE_FACTOR
 
@@ -96,7 +92,7 @@ class Graph:
     for node in self.__nodes:
       for name, const in node.consts.items():
         self.__name_to_const[name] = const
-        self.__name_to_shape[name] = const.shape
+        self.__name_to_output_shape[name] = const.shape
 
   def __initialize_inputs_outputs(self) -> None:
     """Initialize inputs and outputs, include all consts."""
@@ -252,7 +248,7 @@ class Graph:
       output_indexes = node.output_indexes
       if node.allow_subsample() and len(output_indexes) < len(input_indexes):
         input_name = node.inputs[0]
-        name = f'{input_name}.Subsample.{node.name}'
+        name = f'{input_name}.subsample.{node.name}'
         if name not in name_to_subsample_node:
           ss_node = self.__simple_subsample_node(name, input_name, node)
           name_to_subsample_node[name] = ss_node
@@ -275,7 +271,7 @@ class Graph:
               output_indexes = self.__name_to_output_indexes[input_name]
 
             if set(node.dependencies) < set(output_indexes):
-              name = f'{input_name}.Subsample.{node.name}'
+              name = f'{input_name}.subsample.{node.name}'
               if name not in name_to_subsample_node:
                 ss_node = self.__subsample_node(name, input_name)
                 ss_node.input_indexes = output_indexes
@@ -306,15 +302,23 @@ class Graph:
       node.inference_dims(self.__name_to_input_dim, self.__name_to_node)
 
   def __inference_shapes(self) -> None:
-    """Inference shapes for all nodes."""
+    """Inference input and output shapes for all nodes."""
     logging.info('Inference shapes.')
     for name in self.__inputs:
-      if name in [_IVECTOR, _INPUT, '0']:
-        self.__name_to_shape[name] = [len(self.__name_to_output_indexes[name]),
-                                      self.__name_to_input_dim[name]]
+      if name in [_IVECTOR, _INPUT]:
+        chunk_size = len(self.__name_to_output_indexes[name])
+        dim = self.__name_to_input_dim[name]
+        self.__name_to_output_shape[name] = [chunk_size, dim]
 
     for node in self.__nodes:
-      node.inference_shape(self.__name_to_shape)
+      node.inference_output_shape(self.__name_to_output_shape)
+
+    for node in self.__nodes:
+      input_shapes = dict()
+      for name in node.inputs:
+        if name in self.__name_to_output_shape:
+          input_shapes[name] = self.__name_to_output_shape[name]
+      node.input_shapes = input_shapes
 
   @staticmethod
   def __onnx_shape(shape: List[int]) -> List[Union[int, str]]:
@@ -335,13 +339,14 @@ class Graph:
     logging.info('Initialize input tensors.')
     for name in self.__inputs:
       if name not in self.__name_to_const:
-        input_node = helper.make_tensor_value_info(
-            name,
-            onnx_pb.TensorProto.FLOAT,
-            self.__onnx_shape(self.__name_to_shape[name]))
+        # -1 means dynamic chunk.
+        input_shape = [-1] + self.__name_to_output_shape[name][1:]
+        shape = self.__onnx_shape(input_shape)
+        input_tensor = helper.make_tensor_value_info(
+            name, onnx_pb.TensorProto.FLOAT, shape)
 
         if name not in self.__name_to_input_tensor:
-          self.__name_to_input_tensor[name] = input_node
+          self.__name_to_input_tensor[name] = input_tensor
         else:
           raise ValueError('model input tensor already exists.')
 
@@ -349,56 +354,46 @@ class Graph:
     """Initialize all output tensors."""
     logging.info('Initialize output tensors.')
     for name in self.__outputs:
-      v = helper.make_tensor_value_info(
+      output_tensor = helper.make_tensor_value_info(
           name,
           onnx_pb.TensorProto.FLOAT,
-          self.__onnx_shape(self.__name_to_shape[name]))
-      self.__output_tensors.append(v)
+          self.__onnx_shape(self.__name_to_output_shape[name]))
+      self.__name_to_output_tensor[name] = output_tensor
 
   def __make_onnx_nodes(self) -> None:
     """Make all onnx nodes."""
     logging.info('Make onnx nodes.')
     for node in self.__nodes:
-      if node.type not in ['Input', 'Output']:
-        input_names = node.inputs
-        output_names = node.outputs
-        onnx_node = helper.make_node(node.type, input_names, output_names,
-                                     name=node.name, **node.attrs)
-        self.__onnx_nodes.append(onnx_node)
+      self.__onnx_nodes.add(node.onnx_nodes())
 
   def __make_initializers(self) -> None:
     """Make initializers."""
-    self.__all_inputs = []
-    for node in self.__nodes:
-      self.__all_inputs.extend(node.inputs)
+    for name, const in self.__name_to_const.items():
+      self.__initializers.append(numpy_helper.from_array(const, name=name))
+    self.__initializers.extend(self.__onnx_nodes.initializers)
 
-    for const_name in self.__name_to_const:
-      const = self.__name_to_const[const_name]
-      if const_name in self.__all_inputs:
-        tensor = numpy_helper.from_array(const, name=const_name)
-        val = helper.make_tensor_value_info(
-          tensor.name,
-          tensor.data_type,
-          self.__onnx_shape(tensor.dims))
-        self.__initializers.append(tensor)
-        self.__input_with_initializers.append(val)
-
-    input_tensors = list(self.__name_to_input_tensor.values())
-    self.__input_with_initializers.extend(input_tensors)
+    self.__input_with_initializers = list(self.__name_to_input_tensor.values())
+    for initializer in self.__initializers:
+      tensor = helper.make_tensor_value_info(
+          initializer.name,
+          initializer.data_type,
+          self.__onnx_shape(initializer.dims))
+      self.__input_with_initializers.append(tensor)
 
   def __make_internal_inputs(self) -> None:
     """Make internal inputs."""
-    initializers_names = [i.name for i in self.__initializers]
-    input_tensors_names = [i for i in self.__all_inputs
-                           if i not in initializers_names or
-                           i not in self.__inputs]
+    initializer_names = [i.name for i in self.__initializers]
 
-    for name in input_tensors_names:
-      internal_input = helper.make_tensor_value_info(
-          name,
-          onnx_pb.TensorProto.FLOAT,
-          self.__onnx_shape(self.__name_to_shape[name]))
-      self.__internal_inputs.append(internal_input)
+    all_inputs = []
+    for node in self.__nodes:
+      all_inputs.extend(node.inputs)
+
+    for input_name in all_inputs:
+      if input_name not in self.__inputs or input_name not in initializer_names:
+        shape = self.__onnx_shape(self.__name_to_output_shape[input_name])
+        tensor = helper.make_tensor_value_info(
+            input_name, onnx_pb.TensorProto.FLOAT, shape)
+        self.__internal_inputs.append(tensor)
 
   def __make_onnx_model(self) -> ModelProto:
     """Make onnx model.
@@ -406,9 +401,10 @@ class Graph:
     Returns:
       onnx model.
     """
-    graph = helper.make_graph(self.__onnx_nodes, 'open-source-kaldi-onnx',
+    graph = helper.make_graph(self.__onnx_nodes.onnx_nodes,
+                              'open-source-kaldi-onnx',
                               self.__input_with_initializers,
-                              self.__output_tensors,
+                              list(self.__name_to_output_tensor.values()),
                               self.__initializers,
                               value_info=self.__internal_inputs)
     onnx_model = helper.make_model(graph)
@@ -426,7 +422,7 @@ class Graph:
     Returns:
       Onnx model.
     """
-    logging.info('Prepare Graph.')
+    logging.info('==========Prepare Graph.==========')
     self.__initialize_consts()
     self.__initialize_inputs_outputs()
     self.__reorder_nodes()
@@ -438,7 +434,7 @@ class Graph:
     self.__inference_dims()
     self.__inference_shapes()
 
-    logging.info(f'Start making ONNX model.')
+    logging.info(f'==========Start making ONNX model.==========')
     logging.info(f'Model has {len(self.__nodes)} nodes.')
     self.__initialize_input_tensors()
     self.__initialize_output_tensors()
