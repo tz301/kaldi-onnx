@@ -204,7 +204,7 @@ class AppendComponent(Component):
       component_id: component id.
       inputs: input name list of component.
     """
-    super().__init__(component_id, f'Append_{component_id}', inputs)
+    super().__init__(component_id, f'append_{component_id}', inputs)
 
 
 class OffsetComponent(Component):
@@ -222,7 +222,7 @@ class OffsetComponent(Component):
       input_name: input name of component.
       offset: offset.
     """
-    name = f'{input_name}.Offset.{offset}'
+    name = f'{input_name}.offset.{offset}'
     super().__init__(component_id, name, [input_name])
     self.offset = offset
 
@@ -267,7 +267,7 @@ class ScaleComponent(Component):
       input_name: input name of component.
       scale: scale.
     """
-    super().__init__(component_id, f'{input_name}.Scale.{scale}', [input_name])
+    super().__init__(component_id, f'{input_name}.scale.{scale}', [input_name])
     self.scale = scale
 
 
@@ -290,7 +290,7 @@ class SpliceComponent(Component):
       inputs: input name list of component.
       context: context list, such as [-2, 0, 2].
     """
-    super().__init__(component_id, f'Splice_{component_id}', inputs)
+    super().__init__(component_id, f'splice_{component_id}', inputs)
     self.context = context
 
 
@@ -304,7 +304,7 @@ class SumComponent(Component):
       component_id: component id.
       inputs: input name list of component.
     """
-    super().__init__(component_id, '.Sum.'.join(inputs), inputs)
+    super().__init__(component_id, '.sum.'.join(inputs), inputs)
 
 
 class AffineComponent(Component):
