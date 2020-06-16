@@ -1,3 +1,4 @@
+# onnx-tf==1.5.0 pip install has bug, just clone master and install.
 numpy==1.18.4
 onnx==1.5.0
 pylint>=2.4.2
