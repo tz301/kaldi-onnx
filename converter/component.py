@@ -40,7 +40,7 @@ class Component:
       inputs: input name list of component.
       node_type: type of node.
     """
-    self.id = component_id  # TODO(tz): private.
+    self.id = component_id  # pylint: disable=invalid-name
     self.name = name
     self.inputs = inputs
     self.type = node_type
@@ -65,6 +65,15 @@ class Component:
       consts dict.
     """
     return self.__consts
+
+  @consts.setter
+  def consts(self, consts: Dict[str, Union[List, np.array]]):
+    """Set consts dict.
+
+    Args:
+      consts: consts dict.
+    """
+    self.__consts = consts
 
   def items(self) -> ItemsView[str, VALUE_TYPE]:
     """Get attribute items.
@@ -153,7 +162,7 @@ class Component:
 
       if token in actions:
         func, name = actions[token]
-        obj, pos = func(line, pos, line_buffer)
+        obj, line, pos = func(line, pos, line_buffer)
         self._attrs[name] = obj
 
     self._adjust_attributes()
@@ -162,13 +171,16 @@ class Component:
       self.dim = self._attrs['dim']
       self._attrs.pop('dim')
 
-    const_names = ['params', 'bias', 'stats_mean', 'stats_var', 'time_offsets']
+    const_names = ['params', 'bias', 'stats_mean', 'stats_var']
     for const_name in const_names:
       if const_name in self._attrs:
-        new_const_name = f'{self.name}_{const_name}'
-        self.inputs.append(new_const_name)
-        self.__consts[new_const_name] = self._attrs[const_name]
-        self._attrs.pop(const_name)
+        if const_name == 'bias' and self._attrs[const_name].shape[0] == 0:
+          self._attrs.pop(const_name)
+        else:
+          new_const_name = f'{self.name}_{const_name}'
+          self.inputs.append(new_const_name)
+          self.__consts[new_const_name] = self._attrs[const_name]
+          self._attrs.pop(const_name)
 
 
 class InputComponent(Component):
@@ -304,7 +316,7 @@ class SumComponent(Component):
       component_id: component id.
       inputs: input name list of component.
     """
-    super().__init__(component_id, '.sum.'.join(inputs), inputs)
+    super().__init__(component_id, '.sum.'.join(inputs), inputs, 'Sum')
 
 
 class AffineComponent(Component):
@@ -336,10 +348,10 @@ class BatchNormComponent(Component):
 
   def _adjust_attributes(self) -> None:
     """Adjust attributes."""
-    add_eps = np.add(self._attrs["stats_var"], self._attrs["epsilon"])
-    scale = np.multiply(self._attrs["target_rms"], np.power(add_eps, -0.5))
-    self._attrs["stats_mean"] = scale
+    stats_var = np.add(self._attrs["stats_var"], self._attrs["epsilon"])
+    scale = np.multiply(self._attrs["target_rms"], np.power(stats_var, -0.5))
     self._attrs["stats_var"] = -np.multiply(scale, self._attrs["stats_mean"])
+    self._attrs["stats_mean"] = scale
 
 
 class TdnnComponent(Component):
@@ -351,11 +363,6 @@ class TdnnComponent(Component):
         '<TimeOffsets>': (_read_vector_int, 'time_offsets'),
         '<LinearParams>': (_read_matrix_trans, 'params'),
         '<BiasParams>': (_read_vector_float, 'bias'),
-        '<OrthonormalConstraint>': (_read_float, 'orthonormal_constraint'),
-        '<UseNaturalGradient>': (_read_bool, 'use_natrual_gradient'),
-        '<RankInOut>': (_read_int, 'rank_inout'),
-        '<NumSamplesHistory>': (_read_float, 'num_samples_history'),
-        '<AlphaInOut>': (_read_float, 'alpha_inout'),
     }
     return actions
 
@@ -375,6 +382,7 @@ class Components(Enum):
   TdnnComponent = TdnnComponent
 
 
+# pylint: disable=invalid-name
 COMPONENT_TYPE = Union[Component, InputComponent, OutputComponent,
                        AppendComponent, OffsetComponent, ReplaceIndexComponent,
                        ScaleComponent, SpliceComponent, SumComponent,
@@ -426,7 +434,10 @@ def read_component_type(line: str, pos: int) -> Tuple[str, int]:
                      f'expected <xxxComponent>, got: {component_type}.')
 
 
-def _read_bool(line: str, pos: int, line_buffer: TextIO) -> Tuple[bool, int]:
+def _read_bool(line: str,
+               pos: int,
+               line_buffer: TextIO
+               ) -> Tuple[bool, str, int]:
   """Read bool value from line.
 
   Args:
@@ -435,21 +446,21 @@ def _read_bool(line: str, pos: int, line_buffer: TextIO) -> Tuple[bool, int]:
     line_buffer: line buffer for nnet3 file.
 
   Returns:
-    bool value and current position.
+    bool value, line string and current position.
   """
   del line_buffer  # Unused.
 
   tok, pos = read_next_token(line, pos)
   if tok in ['F', 'False', 'false']:
-    return False, pos
+    return False, line, pos
   elif tok in ['T', 'True', 'true']:
-    return True, pos
+    return True, line, pos
   else:
     raise ValueError(f'Error at position {pos}, expected bool but got {tok}.')
 
 
 # pylint: disable = unused-argument
-def _read_int(line: str, pos: int, line_buffer: TextIO) -> Tuple[int, int]:
+def _read_int(line: str, pos: int, line_buffer: TextIO) -> Tuple[int, str, int]:
   """Read int value from line.
 
   Args:
@@ -458,15 +469,18 @@ def _read_int(line: str, pos: int, line_buffer: TextIO) -> Tuple[int, int]:
     line_buffer: line buffer for nnet3 file.
 
   Returns:
-    int value and current position.
+    int value, line string and current position.
   """
   del line_buffer  # Unused.
 
   tok, pos = read_next_token(line, pos)
-  return int(tok), pos
+  return int(tok), line, pos
 
 
-def _read_float(line: str, pos: int, line_buffer: TextIO) -> Tuple[float, int]:
+def _read_float(line: str,
+                pos: int,
+                line_buffer: TextIO
+                ) -> Tuple[float, str, int]:
   """Read float value from line.
 
   Args:
@@ -475,18 +489,18 @@ def _read_float(line: str, pos: int, line_buffer: TextIO) -> Tuple[float, int]:
     line_buffer: line buffer for nnet3 file.
 
   Returns:
-    float value and current position.
+    float value, line string and current position.
   """
   del line_buffer  # Unused.
 
   tok, pos = read_next_token(line, pos)
-  return float(tok), pos
+  return float(tok), line, pos
 
 
 def __read_vector(line: str,
                   pos: int,
                   line_buffer: TextIO
-                  ) -> Tuple[np.array, int]:
+                  ) -> Tuple[np.array, str, int]:
   """Read vector from line.
 
   Args:
@@ -495,7 +509,7 @@ def __read_vector(line: str,
     line_buffer: line buffer for nnet3 file.
 
   Returns:
-    vector and current position.
+    vector, line string and current position.
   """
   tok, pos = read_next_token(line, pos)
   if tok != '[':
@@ -518,13 +532,13 @@ def __read_vector(line: str,
 
   if tok is None:
     raise ValueError('Encountered EOF while reading vector.')
-  return vector, pos
+  return vector, line, pos
 
 
 def _read_vector_int(line: str,
                      pos: int,
                      line_buffer: TextIO
-                     ) -> Tuple[np.array, int]:
+                     ) -> Tuple[np.array, str, int]:
   """Read int vector from line.
 
   Args:
@@ -533,16 +547,16 @@ def _read_vector_int(line: str,
     line_buffer: line buffer for nnet3 file.
 
   Returns:
-    float int and current position.
+    float int, line string and current position.
   """
-  vector, pos = __read_vector(line, pos, line_buffer)
-  return np.array([int(v) for v in vector], dtype=np.int), pos
+  vector, line, pos = __read_vector(line, pos, line_buffer)
+  return np.array([int(v) for v in vector], dtype=np.int), line, pos
 
 
 def _read_vector_float(line: str,
                        pos: int,
                        line_buffer: TextIO
-                       ) -> Tuple[np.array, int]:
+                       ) -> Tuple[np.array, str, int]:
   """Read float vector from line.
 
   Args:
@@ -551,10 +565,10 @@ def _read_vector_float(line: str,
     line_buffer: line buffer for nnet3 file.
 
   Returns:
-    float vector and current position.
+    float vector, line string and current position.
   """
-  vector, pos = __read_vector(line, pos, line_buffer)
-  return np.array([float(v) for v in vector], dtype=np.float32), pos
+  vector, line, pos = __read_vector(line, pos, line_buffer)
+  return np.array([float(v) for v in vector], dtype=np.float32), line, pos
 
 
 def __check_for_newline(line: str, pos: int) -> Tuple[bool, int]:
@@ -581,7 +595,7 @@ def __check_for_newline(line: str, pos: int) -> Tuple[bool, int]:
 def _read_matrix_trans(line: str,
                        pos: int,
                        line_buffer: TextIO
-                       ) -> Tuple[np.array, int]:
+                       ) -> Tuple[np.array, str, int]:
   """Read matrix transpose from line.
 
   Args:
@@ -590,7 +604,7 @@ def _read_matrix_trans(line: str,
     line_buffer: line buffer for nnet3 file.
 
   Returns:
-    matrix transpose and current position.
+    matrix transpose, line string and current position.
   """
   tok, pos = read_next_token(line, pos)
   if tok != '[':
@@ -623,4 +637,4 @@ def _read_matrix_trans(line: str,
         raise ValueError('Encountered EOF while reading matrix.')
       pos = 0
 
-  return np.transpose(np.array(mat, dtype=np.float32)), pos
+  return np.transpose(np.array(mat, dtype=np.float32)), line, pos
