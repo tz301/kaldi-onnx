@@ -2,11 +2,14 @@
 # -*- coding: utf-8 -*-
 # Created by tz301 on 2020/05/27
 """Nnet3 node."""
+from typing import Dict, List, Union
+
+import numpy as np
 from onnx import NodeProto
 from onnx.helper import make_node
 from onnx.numpy_helper import from_array
 
-from converter.component import *
+from converter import component as cop
 from converter.utils import kaldi_check
 
 
@@ -54,7 +57,7 @@ class OnnxNodes:
   def add(self, onnx_nodes: Union[NodeProto, List[NodeProto], 'OnnxNodes']
           ) -> None:
     """Add onnx node (list) or OnnxNodes.
-    
+
     Args:
       onnx_nodes: onnx node (list) or OnnxNodes, for OnnxNodes, will also add
                   initializer.
@@ -98,8 +101,9 @@ class KaldiNode:
     __input_indexes: input indexes of node.
     __output_indexes: output indexes of node.
   """
+  # pylint: disable=too-many-instance-attributes
 
-  def __init__(self, component: COMPONENT_TYPE) -> None:
+  def __init__(self, component: cop.COMPONENT_TYPE) -> None:
     """Initialize.
 
     Args:
@@ -319,17 +323,13 @@ class KaldiNode:
 
   def inference_dependencies(self,
                              output_indexes: List[int],
-                             name_to_node: Dict[str, 'KaldiNode'],
                              name_to_dependencies: Dict[str, List[int]],
-                             subsample_factor: int
                              ) -> None:
     """Inference node dependencies and output indexes.
 
     Args:
       output_indexes: output index list for node.
-      name_to_node: {node name: Node}.
       name_to_dependencies: {node name: dependencies}.
-      subsample_factor: subsample factor.
     """
     msg = self._err_msg('inference dependencies', 'No available output index.')
     kaldi_check(len(output_indexes) > 0, msg)
@@ -428,110 +428,22 @@ class KaldiNode:
     self.output_shape = [len(self.output_indexes), self.output_dim]
     name_to_output_shape[self.name] = self.output_shape
 
-  @staticmethod
-  def __slice_onnx_nodes(node_name: str,
-                         input_name: str,
-                         starts: List[int],
-                         ends: List[int],
-                         steps: List[int]
-                         ) -> OnnxNodes:
-    """Construct slice OnnxNodes.
+  def __onnx_nodes_by_indexes(self, name: str, indexes: List[int]) -> OnnxNodes:
+    """Construct OnnxNodes by indexes.
 
     Args:
-      node_name: name of node.
-      input_name: input name of node.
-      starts: start index list of node.
-      ends: end index list of node.
-      steps: step list of node.
+      name: name of node.
+      indexes: index list.
 
     Returns:
       OnnxNodes.
     """
-    start_name = f"{node_name}_start"
-    end_name = f"{node_name}_end"
-    axis_name = f"{node_name}_axis"
-    step_name = f"{node_name}_step"
-
-    onnx_nodes = OnnxNodes()
-    onnx_nodes.init(start_name, np.array(starts, dtype=np.int32))
-    onnx_nodes.init(end_name, np.array(ends, dtype=np.int32))
-    onnx_nodes.init(axis_name, np.array([0], dtype=np.int32))
-    onnx_nodes.init(step_name, np.array(steps, dtype=np.int32))
-
-    inputs = [input_name, start_name, end_name, axis_name, step_name]
-    onnx_nodes.add(make_node("Slice", inputs, [node_name], node_name))
-    return onnx_nodes
-
-  def __onnx_nodes_by_indexes(self, name, indexes, output_dim):
-    """"""
-    input_name = self.inputs[0]
-    input_shape = self.input_shapes[input_name]
-
-    start = indexes[0]
-    end = indexes[-1] + 1
-    step = indexes[1] - start
-    simu_indexes = list(range(start, end, step))
-
-    input_len = input_shape[0]
-    if end > input_len:
-      raise ValueError(f'Index error: {end} > {input_len}.')
-    else:  # Dynamic chunk.
-      end = np.iinfo(np.int32).max if end == input_len else end - input_len
-
-    if simu_indexes == indexes:
-      # One-step indexes, such as [1, 3, 5, ...].
-      return self.__slice_onnx_nodes(name, input_name, [start], [end], [step])
-    else:
-      # Two-step indexes, such as [1, 2, 4, 5, ...].
-      # Split into two one-step indexes [1, 4, ...] and [2, 5, ...].
-      start_indexes = indexes[0:2]
-      step = indexes[2] - start_indexes[0]
-
-      simulated_indexes = []
-      for j in range(int(len(indexes) / 2)):
-        simulated_indexes.extend([b + j * step for b in start_indexes])
-
-      if indexes != simulated_indexes:
-        raise NotImplementedError(f"Not supported forward indexes: {indexes}.")
-      else:
-        nodes = OnnxNodes()
-        # Two split nodes, with shape [chunk, dim].
-        split_names = [name + "_split_1", name + "_split_2"]
-        for start, split_name in zip(start_indexes, split_names):
-          nodes.add(self.__slice_onnx_nodes(split_name, input_name,
-                                            [start], [end], [step]))
-
-        # Unsqueeze to shape [chunk, dim, 1].
-        split_unsqueeze_names = []
-        for split_name in split_names:
-          name_unsqueeze = f'{split_name}_unsqueeze'
-          nodes.add(make_node("Unsqueeze", [split_name], [name_unsqueeze],
-                              name_unsqueeze, axes=[-1]))
-          split_unsqueeze_names.append(name_unsqueeze)
-
-        # Concat two split nodes to shape [chunk, dim, 2].
-        concat_name = name + "_concat"
-        nodes.add(make_node("Concat", split_unsqueeze_names,
-                            [concat_name], concat_name, axis=-1))
-
-        # Transpose tot shape [dim, chunk, 2].
-        transpose_name = name + "_transpose"
-        nodes.add(make_node("Transpose", [concat_name], [transpose_name],
-                            transpose_name, perm=(1, 0, 2)))
-
-        # Reshape to shape [dim, chunk * 2].
-        reshape_out_shape = name + "_output_shape_reshape"
-        reshape_array = np.array([output_dim, -1], dtype=np.int64)
-        nodes.init(reshape_out_shape, reshape_array)
-        reshape_input_names = [transpose_name, reshape_out_shape]
-        reshape_name = name + "_reshape"
-        nodes.add(make_node("Reshape", reshape_input_names, [reshape_name],
-                            reshape_name))
-
-        # Transpose to shape [chunk * 2, dim].
-        node = make_node("Transpose", [reshape_name], [name], name, perm=(1, 0))
-        nodes.add(node)
-        return nodes
+    nodes = OnnxNodes()
+    gather_name = f'{name}_gather'
+    nodes.init(gather_name, np.array(indexes, dtype=np.int))
+    input_names = [self.inputs[0], gather_name]
+    nodes.add(make_node("Gather", input_names, [name], name, axis=0))
+    return nodes
 
   def _onnx_nodes_by_indexes(self, context: List[int] = None) -> OnnxNodes:
     """Construct OnnxNodes by forward indexes, will be used for some subclass.
@@ -543,19 +455,17 @@ class KaldiNode:
     Returns:
       OnnxNodes.
     """
-    output_dim = self.output_dim
     indexes = self.forward_indexes
 
     if context is None:
-      return self.__onnx_nodes_by_indexes(self.name, indexes, output_dim)
+      return self.__onnx_nodes_by_indexes(self.name, indexes)
     else:
       nodes = OnnxNodes()
-      output_dim /= len(context)
       sub_inputs = list()
       for i, context_value in enumerate(context):
         sub_name = f"{self.name}_splice_{context_value}"
         sub_indexes = [indexes[j] for j in range(i, len(indexes), len(context))]
-        node = self.__onnx_nodes_by_indexes(sub_name, sub_indexes, output_dim)
+        node = self.__onnx_nodes_by_indexes(sub_name, sub_indexes)
         nodes.add(node)
         sub_inputs.append(sub_name)
 
@@ -630,7 +540,7 @@ class OffsetNode(KaldiNode):
     __offset: offset.
   """
 
-  def __init__(self, component: OffsetComponent) -> None:
+  def __init__(self, component: cop.OffsetComponent) -> None:
     """See parent class document."""
     super().__init__(component)
     self.__offset = component.offset
@@ -648,9 +558,7 @@ class OffsetNode(KaldiNode):
 
   def inference_dependencies(self,
                              output_indexes: List[int],
-                             name_to_node: Dict[str, 'KaldiNode'],
                              name_to_dependencies: Dict[str, List[int]],
-                             subsample_factor: int
                              ) -> None:
     """See parent class document."""
     msg = self._err_msg('Inference dependencies', 'No available output index.')
@@ -725,7 +633,7 @@ class ScaleNode(KaldiNode):
     __scale: scale.
   """
 
-  def __init__(self, component: ScaleComponent) -> None:
+  def __init__(self, component: cop.ScaleComponent) -> None:
     """See parent class document."""
     super().__init__(component)
     self.__scale = component.scale
@@ -748,7 +656,7 @@ class SpliceNode(KaldiNode):
     __context: context, [left context, right context].
   """
 
-  def __init__(self, component: SpliceComponent) -> None:
+  def __init__(self, component: cop.SpliceComponent) -> None:
     """See parent class document."""
     super().__init__(component)
     self.__context = component.context
@@ -768,9 +676,7 @@ class SpliceNode(KaldiNode):
 
   def inference_dependencies(self,
                              output_indexes: List[int],
-                             name_to_node: Dict[str, 'KaldiNode'],
                              name_to_dependencies: Dict[str, List[int]],
-                             subsample_factor: int
                              ) -> None:
     """See parent class document."""
     msg = self._err_msg('inference dependencies', 'No available output index.')
@@ -794,7 +700,7 @@ class SpliceNode(KaldiNode):
     """See parent class document."""
     for output_index in self.output_indexes:
       computed_indexes = [output_index + c for c in self.__context]
-      msg = self._err_msg('Pre compute', f'Splice is not computable.')
+      msg = self._err_msg('Pre compute', 'Splice is not computable.')
       kaldi_check(set(computed_indexes) <= set(self.input_indexes), msg)
       forward_index = [self.input_indexes.index(i) for i in computed_indexes]
       self.forward_indexes.extend(forward_index)
@@ -862,7 +768,7 @@ class AffineNode(KaldiNode):
       onnx_nodes.add(make_node("Add", add_inputs, self.outputs, self.name))
       return onnx_nodes
     else:
-      raise ValueError(self._err_msg(f'onnx nodes', 'inputs length is '
+      raise ValueError(self._err_msg('onnx nodes', 'inputs length is '
                                      f'not 2 or 3: {self.inputs}.'))
 
 
@@ -892,6 +798,39 @@ class SubsampleNode(KaldiNode):
     return self._onnx_nodes_by_indexes()
 
 
+def tdnn_nodes(component: cop.TdnnComponent) -> 'NODE_TYPES':
+  """Get KaldiNode list from TdnnComponent.
+
+  Args:
+    component: TdnnComponent.
+
+  Returns:
+    KaldiNode list.
+  """
+  time_offsets = component["time_offsets"]
+  shape = time_offsets.shape
+  comp_id = component.id
+  name = component.name
+  inputs = component.inputs[:]
+
+  if shape == (1,) and time_offsets[0] == 0:
+    affine_component = cop.AffineComponent(comp_id, name, inputs)
+    affine_component.inputs = component.inputs
+    affine_component.consts = component.consts
+    return [AffineNode(affine_component)]
+  elif shape == (2,) and time_offsets[0] < time_offsets[1]:
+    context = [time_offsets[0], time_offsets[1]]
+    splice_component = cop.SpliceComponent(comp_id, inputs, context)
+    splice_name = [splice_component.name]
+    affine_component = cop.AffineComponent(comp_id, name, splice_name)
+    affine_component.inputs = splice_name + list(component.consts.keys())
+    affine_component.consts = component.consts
+    return [SpliceNode(splice_component), AffineNode(affine_component)]
+  else:
+    raise ValueError(f'Error time offsets for TdnnComponent: {time_offsets}.')
+
+
+# pylint: disable=invalid-name
 NODE_TYPE = Union[KaldiNode, AppendNode, OffsetNode, ReplaceIndexNode,
                   ScaleNode, SpliceNode, SumNode, AffineNode, BatchNormNode,
                   SubsampleNode]
