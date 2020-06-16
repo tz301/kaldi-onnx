@@ -4,17 +4,18 @@
 """Parse nnet3 model."""
 import logging
 import re
-from enum import unique
+from enum import Enum, unique
+from typing import Dict, List, TextIO, Union
 
-from converter.component import *
+from converter import component as cop
 from converter.utils import kaldi_check, VALUE_TYPE
 
 # These components equal to corresponding onnx node.
 _COMPONENT_ONNX_TYPE = {
-  'GeneralDropoutComponent': 'Identity',
-  'NoOpComponent': 'Identity',
-  'RectifiedLinearComponent': 'Relu',
-  'LogSoftmaxComponent': 'LogSoftmax',
+    'GeneralDropoutComponent': 'Identity',
+    'NoOpComponent': 'Identity',
+    'RectifiedLinearComponent': 'Relu',
+    'LogSoftmaxComponent': 'LogSoftmax',
 }
 
 
@@ -34,6 +35,8 @@ class Parser:
 
   Attributes:
     __name_to_component: {name: Component}.
+    __component_name_to_name: {component name: name}, for some component in
+                              nnet3 file, name and component name is different.
     __num_components: number of components.
     __line_buffer: line buffer for nnet3 file.
     __id: id for current parsed component.
@@ -47,13 +50,14 @@ class Parser:
       line_buffer: line buffer for kaldi's text mdl file.
     """
     self.__name_to_component = dict()
+    self.__component_name_to_name = dict()
     self.__num_components = 0
     self.__line_buffer = line_buffer
     self.__id = 0
-    name_value_items = Components.__members__.items()
+    name_value_items = cop.Components.__members__.items()
     self.__type_to_component = {n: v.value for n, v in name_value_items}
 
-  def run(self) -> COMPONENTS_TYPE:
+  def run(self) -> cop.COMPONENTS_TYPE:
     """Start parse nnet3 model file.
 
     Returns:
@@ -87,14 +91,16 @@ class Parser:
           conf['input'] = self.__parse_component_input(conf['input'])
 
         self.__id += 1
+        name = conf['name']
         node_type = conf['node_type']
         if node_type == 'input-node':
-          component = InputComponent(self.__id, conf['name'], int(conf['dim']))
+          component = cop.InputComponent(self.__id, name, int(conf['dim']))
         elif node_type == 'output-node':
-          component = OutputComponent(self.__id, conf['name'], conf['input'])
+          component = cop.OutputComponent(self.__id, name, conf['input'])
         elif conf['node_type'] == 'component-node':
-          name = conf['component'] if 'component' in conf else conf['name']
-          component = Component(self.__id, name, conf['input'])
+          if 'component' in conf and name != conf['component']:
+            self.__component_name_to_name[conf['component']] = name
+          component = cop.Component(self.__id, conf['name'], conf['input'])
         else:
           raise ValueError(f'Error node type: {node_type}.')
 
@@ -173,7 +179,7 @@ class Parser:
   def __parse_descriptor(self,
                          sub_type: str,
                          input_str: str,
-                         sub_components: COMPONENTS_TYPE
+                         sub_components: cop.COMPONENTS_TYPE
                          ) -> str:
     """Parse kaldi descriptor.
 
@@ -279,7 +285,7 @@ class Parser:
   # pylint: disable=too-many-locals
   def __parse_append_descriptor(self,
                                 input_str: str,
-                                components: COMPONENTS_TYPE
+                                components: cop.COMPONENTS_TYPE
                                 ) -> str:
     """Parse kaldi Append descriptor.
 
@@ -321,7 +327,7 @@ class Parser:
     pure_inputs = list(set(offset_inputs))
     if num_inputs == len(offset_inputs) and len(pure_inputs) == 1:
       self.__id += 1
-      component = SpliceComponent(self.__id, pure_inputs, offsets)
+      component = cop.SpliceComponent(self.__id, pure_inputs, offsets)
       for item in offset_components:
         components.remove(item)
       components.append(component)
@@ -330,7 +336,7 @@ class Parser:
       if (len(pure_inputs) == 1 and len(splice_indexes) == 1 and
           len(offset_inputs) > 1):
         self.__id += 1
-        splice_component = SpliceComponent(self.__id, pure_inputs, offsets)
+        splice_component = cop.SpliceComponent(self.__id, pure_inputs, offsets)
 
         new_append_inputs = []
         for i in range(num_inputs):
@@ -345,13 +351,13 @@ class Parser:
         components.append(splice_component)
 
       self.__id += 1
-      component = AppendComponent(self.__id, append_inputs)
+      component = cop.AppendComponent(self.__id, append_inputs)
       components.append(component)
     return component.name
 
   def __parse_offset_descriptor(self,
                                 input_str: str,
-                                components: COMPONENTS_TYPE
+                                components: cop.COMPONENTS_TYPE
                                 ) -> str:
     """Parse kaldi Offset descriptor.
 
@@ -375,13 +381,13 @@ class Parser:
       input_name = items[0]
 
     self.__id += 1
-    component = OffsetComponent(self.__id, input_name, int(items[1]))
+    component = cop.OffsetComponent(self.__id, input_name, int(items[1]))
     components.append(component)
     return component.name
 
   def __parse_replace_index_descriptor(self,
                                        input_str: str,
-                                       components: COMPONENTS_TYPE
+                                       components: cop.COMPONENTS_TYPE
                                        ) -> str:
     """Parse kaldi ReplaceIndex descriptor.
 
@@ -402,13 +408,14 @@ class Parser:
       input_name = items[0]
 
     self.__id += 1
-    component = ReplaceIndexComponent(self.__id, input_name, items[1], items[2])
+    component = cop.ReplaceIndexComponent(self.__id, input_name, items[1],
+                                          items[2])
     components.append(component)
     return component.name
 
   def __parse_scale_descriptor(self,
                                input_str: str,
-                               components: COMPONENTS_TYPE
+                               components: cop.COMPONENTS_TYPE
                                ) -> str:
     """Parse kaldi Scale descriptor.
 
@@ -429,13 +436,13 @@ class Parser:
       input_name = items[1]
 
     self.__id += 1
-    component = ScaleComponent(self.__id, input_name, float(items[0]))
+    component = cop.ScaleComponent(self.__id, input_name, float(items[0]))
     components.append(component)
     return component.name
 
   def __parse_sum_descriptor(self,
                              input_str: str,
-                             components: COMPONENTS_TYPE
+                             components: cop.COMPONENTS_TYPE
                              ) -> str:
     """Parse kaldi Sum descriptor.
 
@@ -459,17 +466,18 @@ class Parser:
       input_names.append(input_name)
 
     self.__id += 1
-    component = SumComponent(self.__id, input_names)
+    component = cop.SumComponent(self.__id, input_names)
     components.append(component)
     return component.name
 
   def __parse_component_lines(self):
     """Parse all components lines."""
+    # pylint: disable=too-many-branches
     num = 0
     while True:
       line = next(self.__line_buffer)
       pos = 0
-      tok, pos = read_next_token(line, pos)
+      tok, pos = cop.read_next_token(line, pos)
 
       if tok is None:
         line = next(self.__line_buffer)
@@ -477,11 +485,14 @@ class Parser:
           raise ValueError(f'Unexpected EOF on line: {line}.')
 
         pos = 0
-        tok, pos = read_next_token(line, pos)
+        tok, pos = cop.read_next_token(line, pos)
 
       if tok == '<ComponentName>':
-        component_name, pos = read_next_token(line, pos)
-        component_type_str, pos = read_component_type(line, pos)
+        component_name, pos = cop.read_next_token(line, pos)
+        component_type_str, pos = cop.read_component_type(line, pos)
+
+        if component_name in self.__component_name_to_name:
+          component_name = self.__component_name_to_name[component_name]
 
         if component_name in self.__name_to_component:
           component = self.__name_to_component[component_name]
@@ -495,7 +506,7 @@ class Parser:
             component.type = _COMPONENT_ONNX_TYPE[component_type]
 
           component_class = self.__type_to_component[component_type]
-          if component_class != Component:
+          if component_class != cop.Component:
             component.__class__ = component_class
 
           end_tokens = {f'</{component_type_str[1:]}', '<ComponentName>'}
@@ -516,7 +527,7 @@ class Parser:
                        line: str,
                        pos: int,
                        component_type: str
-                       ) -> COMPONENT_TYPE:
+                       ) -> cop.COMPONENT_TYPE:
     """Read component.
 
     Args:
