@@ -30,7 +30,6 @@ class ConverterTest(unittest.TestCase):
     max_err = _test_one_model(self.__data_dir / 'model1', 32, 32)
     self.assertLess(max_err, 1e-5, 'model1 inference error.')
 
-  @unittest.skip("")
   def test_model2(self):
     """Test model in kaldi/egs/swbd/s5c/local/chain/tuning/run_tdnn_7q.sh"""
     max_err = _test_one_model(self.__data_dir / 'model2', 34, 34)
@@ -54,12 +53,12 @@ def _test_one_model(model_dir, left_context, right_context):
     converter = Converter(kaldi_model_file, left_context, right_context)
     converter.convert('tf', pb_file)
 
+    tf.compat.v1.reset_default_graph()
     with tf.compat.v1.Session() as session:
-      with gfile.FastGFile(pb_file, 'rb') as pb_file:
-        tf.compat.v1.reset_default_graph()
+      with gfile.FastGFile(str(pb_file), 'rb') as pb_file:
         graph_def = tf.compat.v1.GraphDef()
         graph_def.ParseFromString(pb_file.read())
-        tf.import_graph_def(graph_def)
+        tf.import_graph_def(graph_def, name="")
 
       feat_input = np.loadtxt(model_dir / 'input.txt', dtype=np.float32)
       feat_ivector = np.loadtxt(model_dir / 'ivector.txt', dtype=np.float32)
