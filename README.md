@@ -1,5 +1,7 @@
 # Kaldi-ONNX-Tensorflow Converter
 
+[![Build Status](https://travis-ci.com/tz301/kaldi-onnx-tf.svg?branch=master)](https://travis-ci.com/tz301/kaldi-onnx-tf)
+
 This is a tool for converting [Kaldi](https://github.com/kaldi-asr/kaldi) model to onnx / tensorflow model for inference based on XiaoMi's [Kaldi-ONNX](https://github.com/XiaoMi/kaldi-onnx) project.
 
 ## Background
