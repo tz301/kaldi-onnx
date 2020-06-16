@@ -1,4 +1,4 @@
-# Kaldi-ONNX-Tensorflow Converter (Developing...)
+# Kaldi-ONNX-Tensorflow Converter
 
 This is a tool for converting [Kaldi](https://github.com/kaldi-asr/kaldi) model to onnx / tensorflow model for inference based on XiaoMi's [Kaldi-ONNX](https://github.com/XiaoMi/kaldi-onnx) project.
 
@@ -44,12 +44,12 @@ which is required for converting.
 ### 4. Convert
 
 ```sh
-python3 -m converter.convert <input_kaldi_nnet3_file> <left_context> <right_context> <out_model_file> [--format <format>] 
+python3 -m converter.convert <input_kaldi_nnet3_file> <left_context> <right_context> <out_model_file> [--format <format>] [--chunk_size <chunk_size>]
 ```
 
 [--format]: 'onnx' - default, output onnx model, 'tf' - output tensorflow pb model.
 
-Notice: different from Kaldi's invariant time dimension, the output model support dynamic time dimension.
+[--chunk_size]: using 21 as default chunk size.
 
 See [tests](tests/tests.py) for how to use pb model.
 
