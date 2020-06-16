@@ -8,25 +8,28 @@ from argparse import ArgumentParser
 from pathlib import Path
 from subprocess import run
 from tempfile import TemporaryDirectory
+from typing import List
 
 from onnx import ModelProto
 from onnx_tf.backend import prepare
 
+from converter import component as cop
+from converter import node
 from converter.graph import Graph
-from converter.node import *
 from converter.parser import Parser
 
+_CHUNK_SIZE = 21
+
 _COMPONENT_TO_NODE = {
-    Component: KaldiNode,
-    AppendComponent: AppendNode,
-    ReplaceIndexComponent: ReplaceIndexNode,
-    OffsetComponent: OffsetNode,
-    ScaleComponent: ScaleComponent,
-    SpliceComponent: SpliceNode,
-    SumComponent: SumNode,
-    AffineComponent: AffineNode,
-    BatchNormComponent: BatchNormNode,
-    TdnnComponent: None
+    cop.Component: node.KaldiNode,
+    cop.AppendComponent: node.AppendNode,
+    cop.ReplaceIndexComponent: node.ReplaceIndexNode,
+    cop.OffsetComponent: node.OffsetNode,
+    cop.ScaleComponent: node.ScaleNode,
+    cop.SpliceComponent: node.SpliceNode,
+    cop.SumComponent: node.SumNode,
+    cop.AffineComponent: node.AffineNode,
+    cop.BatchNormComponent: node.BatchNormNode,
 }
 
 
@@ -45,31 +48,33 @@ class Converter:
     __outputs: node output name list.
     __name_to_input_dim: {node name: input dim}.
   """
+  # pylint: disable=too-many-instance-attributes
 
   def __init__(self,
                nnet3_file: Path,
                left_context: int,
-               right_context: int
-               ) -> None:
+               right_context: int,
+               chunk_size: int = _CHUNK_SIZE) -> None:
     """Initialize.
 
     Args:
       nnet3_file: kaldi's nnet3 model file.
       left_context: left context of model.
       right_context: right context of model.
+      chunk_size: chunk size, default is _CHUNK_SIZE.
     """
     os.environ["CUDA_VISIBLE_DEVICES"] = ""  # Only use cpu.
     self.__nnet3_file = nnet3_file
     self.__left_context = left_context
     self.__right_context = right_context
-    self.__chunk_size = 21
+    self.__chunk_size = chunk_size
     self.__subsample_factor = 3
     self.__components = []
     self.__inputs = []
     self.__outputs = []
     self.__name_to_input_dim = dict()
 
-  def __parse_nnet3_components(self) -> List[COMPONENT_TYPE]:
+  def __parse_nnet3_components(self) -> List[cop.COMPONENT_TYPE]:
     """Parse kaldi's nnet3 model file to get components.
 
     Returns:
@@ -80,8 +85,8 @@ class Converter:
       return Parser(nnet3_line_buffer).run()
 
   def __convert_components_to_nodes(self,
-                                    components: List[Component]
-                                    ) -> NODE_TYPES:
+                                    components: List[cop.Component]
+                                    ) -> node.NODE_TYPES:
     """Convert all kaldi's nnet3 components to kaldi nodes.
 
     Args:
@@ -93,11 +98,13 @@ class Converter:
     logging.info('Convert nnet3 components to nodes.')
     nodes = []
     for component in components:
-      if isinstance(component, InputComponent):
+      if isinstance(component, cop.InputComponent):
         self.__inputs.append(component.name)
         self.__name_to_input_dim[component.name] = component.dim
-      elif isinstance(component, OutputComponent):
+      elif isinstance(component, cop.OutputComponent):
         self.__outputs.extend(component.inputs)
+      elif isinstance(component, cop.TdnnComponent):
+        nodes.extend(node.tdnn_nodes(component))
       else:
         nodes.append(_COMPONENT_TO_NODE[component.__class__](component))
     return nodes
@@ -110,8 +117,8 @@ class Converter:
       onnx_model: onnx model.
       out_file: output model file.
     """
-    with out_file.open('wb') as out_file:
-      out_file.write(onnx_model.SerializeToString())
+    with out_file.open('wb') as o_file:
+      o_file.write(onnx_model.SerializeToString())
 
   @staticmethod
   def __generate_tensorflow_model(onnx_model: ModelProto,
@@ -142,7 +149,7 @@ class Converter:
     kaldi_nodes = self.__convert_components_to_nodes(components)
     graph = Graph(kaldi_nodes, self.__inputs, self.__outputs,
                   self.__name_to_input_dim, self.__left_context,
-                  self.__right_context)
+                  self.__right_context, self.__chunk_size)
     onnx_model = graph.make_onnx_model()
 
     if model_format == 'onnx':
@@ -163,8 +170,11 @@ def __main():
   parser.add_argument('out_file', type=Path, help='output model path.')
   parser.add_argument('--format', default='onnx', choices=['onnx', 'tf'],
                       help='output model format, default is onnx.')
+  parser.add_argument('--chunk_size', default=_CHUNK_SIZE, type=int,
+                      help=f"chunk size, default is {_CHUNK_SIZE}.")
   args = parser.parse_args()
-  converter = Converter(args.nnet3_file, args.left_context, args.right_context)
+  converter = Converter(args.nnet3_file, args.left_context, args.right_context,
+                        args.chunk_size)
   converter.convert(args.format, args.out_file)
 
 
