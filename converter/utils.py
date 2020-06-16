@@ -2,10 +2,12 @@
 # -*- coding: utf-8 -*-
 # Created by tz301 on 2020/05/26
 """utils."""
-from enum import Enum
 from typing import List, Union
 
-VALUE_TYPE = Union[str, int, float, List[str], List[int]]
+import numpy as np
+
+# pylint: disable=invalid-name
+VALUE_TYPE = Union[str, int, float, List[str], List[int], np.array]
 
 
 def kaldi_check(condition: bool, msg: str) -> None:
@@ -17,64 +19,3 @@ def kaldi_check(condition: bool, msg: str) -> None:
   """
   if condition is False:
     raise Exception(msg)
-
-
-KaldiOps = [
-    'Affine',
-    'Append',
-    'BatchNorm',
-    'Dropout',
-    'Linear',
-    'LogSoftmax',
-    'NoOp',
-    'Offset',
-    'Relu',
-    'ReplaceIndex',
-    'Scale',
-    'Sum',
-    'Subsample',
-    'Splice',
-    'Tdnn',
-    'Input',
-    'Output',
-]
-
-
-class KaldiOpType(Enum):
-  """Kaldi op type, value is used for construct onnx node."""
-
-  Input: 'Input'
-  Output: 'Output'
-  Affine = 'Linear'
-  Append = 'Append'
-  BatchNorm = "BatchNorm"
-  Dropout = 'Identity'
-  Linear = 'Linear'
-  LogSoftmax = 'LogSoftmax'
-  NoOp = 'Identity'
-  Offset = 'Offset'
-  Relu = 'Relu'
-  ReplaceIndex = 'ReplaceIndex'
-  Scale = 'Scale'
-  Sum = 'Sum'
-  Subsample = 'Subsample'
-  Splice = 'Splice'
-  Tdnn = 'Tdnn'
-
-
-KaldiOpRawType = {
-    "input-node": 'Input',
-    "output-node": 'Output',
-    "AffineComponent": 'Gemm',
-    "BatchNormComponent": 'BatchNorm',
-    "FixedAffineComponent": 'Gemm',
-    "GeneralDropoutComponent": 'Dropout',
-    "LinearComponent": 'Linear',
-    "LogSoftmaxComponent": 'LogSoftmax',
-    "NaturalGradientAffineComponent": 'Gemm',
-    "NonlinearComponent": 'Nonlinear',
-    "NoOpComponent": "NoOp",
-    "RectifiedLinearComponent": 'Relu',
-    "ScaleComponent": 'Scale',
-    "TdnnComponent": 'Tdnn',
-}
