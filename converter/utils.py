@@ -10,12 +10,12 @@ import numpy as np
 VALUE_TYPE = Union[str, int, float, List[str], List[int], np.array]
 
 
-def kaldi_check(condition: bool, msg: str) -> None:
+def check(condition: bool, message: str) -> None:
   """Check if condition is True. If False, raise exception with message.
 
   Args:
     condition: condition for check.
-    msg: raised message if condition is False.
+    message: raised message if condition is False.
   """
   if condition is False:
-    raise Exception(msg)
+    raise ValueError(message)
