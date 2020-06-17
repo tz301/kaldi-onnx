@@ -9,7 +9,7 @@ from onnx import checker, helper, ModelProto, numpy_helper, onnx_pb
 
 from converter import node
 from converter.component import Component
-from converter.utils import kaldi_check
+from converter.utils import check
 
 # For nnet3, kaldi's default configure is input 21 frames feature, and output
 # 7 frames for decoding. with a subsample factor of 3.
@@ -25,9 +25,9 @@ class Graph:
 
   Attributes:
     __nodes: node list.
-    __inputs: input names.
-    __outputs: output names.
-    __name_to_input_dim: input dims.
+    __inputs: input name list.
+    __outputs: output name list.
+    __name_to_input_dim: {node name: input dim}.
     __left_context: left context.
     __right_context: right context.
     __chunk_size: chunk size.
@@ -64,6 +64,7 @@ class Graph:
       name_to_input_dim: input dims.
       left_context: left context.
       right_context: right context.
+      chunk_size: chunk size.
     """
     self.__nodes = nodes
     self.__inputs = inputs
@@ -110,11 +111,10 @@ class Graph:
   def __reorder_nodes(self) -> None:
     """Reorder nodes by inputs."""
     logging.info('Reorder nodes.')
-    updated_nodes = []
-    checked_names = []
-    checked_names.extend(self.__inputs)
+    checked_names = self.__inputs[:]
     nodes_need_check = self.__nodes
 
+    updated_nodes = []
     while len(nodes_need_check) > 0:
       for kaldi_node in nodes_need_check:
         depend_inputs = []
@@ -192,7 +192,7 @@ class Graph:
 
   def __inference_input_indexes(self) -> None:
     """Inference input and output indexes for all nodes."""
-    logging.info('Inference indexes.')
+    logging.info('Inference input indexes.')
     input_start_idx = - self.__left_context
     input_end_idx = self.__chunk_size + self.__right_context - 1
     for name in self.__inputs:
@@ -215,8 +215,7 @@ class Graph:
     Returns:
       Subsample node.
     """
-    component = Component(0, name, [input_name])
-    return node.SubsampleNode(component)
+    return node.SubsampleNode(Component(0, name, [input_name]))
 
   def __simple_subsample_node(self,
                               name: str,
@@ -298,7 +297,7 @@ class Graph:
   def __inference_dims(self) -> None:
     """Inference dims for all nodes."""
     logging.info('Inference dims')
-    kaldi_check(_INPUT in self.__name_to_input_dim, 'Cannot find input dim.')
+    check(_INPUT in self.__name_to_input_dim, 'Cannot find input dim.')
     for kaldi_node in self.__nodes:
       kaldi_node.inference_dims(self.__name_to_input_dim, self.__name_to_node)
 
@@ -315,11 +314,11 @@ class Graph:
       kaldi_node.inference_output_shape(self.__name_to_output_shape)
 
     for kaldi_node in self.__nodes:
-      input_shapes = dict()
+      name_to_input_shape = dict()
       for name in kaldi_node.inputs:
         if name in self.__name_to_output_shape:
-          input_shapes[name] = self.__name_to_output_shape[name]
-      kaldi_node.input_shapes = input_shapes
+          name_to_input_shape[name] = self.__name_to_output_shape[name]
+      kaldi_node.name_to_input_shape = name_to_input_shape
 
   @staticmethod
   def __onnx_shape(shape: List[int]) -> List[Union[int, str]]:
@@ -340,9 +339,7 @@ class Graph:
     logging.info('Initialize input tensors.')
     for name in self.__inputs:
       if name not in self.__name_to_const:
-        # -1 means dynamic chunk.
-        input_shape = [-1] + self.__name_to_output_shape[name][1:]
-        shape = self.__onnx_shape(input_shape)
+        shape = self.__onnx_shape(self.__name_to_output_shape[name])
         input_tensor = helper.make_tensor_value_info(
             name, onnx_pb.TensorProto.FLOAT, shape)  # pylint: disable=no-member
 
