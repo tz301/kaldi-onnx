@@ -1,6 +1,6 @@
-# onnx-tf==1.5.0 pip install has bug, just clone master and install.
 numpy==1.18.4
 onnx==1.5.0
+-e git+https://github.com/onnx/onnx-tensorflow.git@a96703b#egg=onnx-tf-1.5.0 # onnx-tf==1.5.0 installed from pip has compatibility issue with tensorflow 2.2.0.
 pylint>=2.4.2
 tensorflow==2.2.0
 tensorflow-addons==0.10.0
