@@ -2,8 +2,6 @@ language: python
 
 jobs:
   include:
-    - stage: install
-      script: pip install https://github.com/onnx/onnx-tensorflow/archive/master.zip
     - stage: check
       script: python3 -m pylint --indent-string='  ' --max-line-length=80
               --disable=no-else-return,too-few-public-methods,logging-fstring-interpolation
