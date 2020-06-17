@@ -2,19 +2,19 @@
 # -*- coding: utf-8 -*-
 # Created by tz301 on 2020/05/22
 """Nnet3 component."""
-from enum import Enum
 from typing import Dict, ItemsView, List, Set, TextIO, Tuple, Union
 
 import numpy as np
 
-from converter.utils import VALUE_TYPE
+from converter.utils import check, VALUE_TYPE
 
 
 class Component:
   """Kaldi nnet3 component.
 
   This class read Component from nnet3 file.
-  Different Component will be convert to different KaldiNode class.
+  Different Component will be converted to different KaldiNode.
+  Then KaldiNode will be converted to final onnx node.
 
   Attributes:
     id: component id.
@@ -22,8 +22,8 @@ class Component:
     inputs: input name list of component.
     type: type of node, used in KaldiNode or onnx node.
     dim: dimension of node.
-    _attrs: attributes dict.
-    __consts: consts dict, {component name: const value}.
+    _attrs: attribute dict, {attribute name: attribute value}.
+    __consts: const dict, {const name: const value}.
   """
 
   def __init__(self,
@@ -58,7 +58,7 @@ class Component:
     return self._attrs
 
   @property
-  def consts(self) -> Dict[str, Union[List, np.array]]:
+  def consts(self) -> Dict[str, VALUE_TYPE]:
     """Get consts dict.
 
     Returns:
@@ -67,7 +67,7 @@ class Component:
     return self.__consts
 
   @consts.setter
-  def consts(self, consts: Dict[str, Union[List, np.array]]):
+  def consts(self, consts: Dict[str, VALUE_TYPE]):
     """Set consts dict.
 
     Args:
@@ -129,7 +129,7 @@ class Component:
     return actions
 
   def _adjust_attributes(self) -> None:
-    """Adjust attributes."""
+    """Adjust attributes if needed."""
 
   def read_attributes(self,
                       line_buffer: TextIO,
@@ -154,8 +154,7 @@ class Component:
 
       if token is None:
         line = next(line_buffer)
-        if line is None:
-          raise ValueError('Error parsing nnet3 file.')
+        check(line is not None, 'Error parsing nnet3 file.')
 
         pos = 0
         continue
@@ -174,9 +173,11 @@ class Component:
     const_names = ['params', 'bias', 'stats_mean', 'stats_var']
     for const_name in const_names:
       if const_name in self._attrs:
+        # Some components just have <BiasParams> key, with no value.
         if const_name == 'bias' and self._attrs[const_name].shape[0] == 0:
           self._attrs.pop(const_name)
         else:
+          # Add prefix for const name, <component_name>_<const_name>.
           new_const_name = f'{self.name}_{const_name}'
           self.inputs.append(new_const_name)
           self.__consts[new_const_name] = self._attrs[const_name]
@@ -184,18 +185,14 @@ class Component:
 
 
 class InputComponent(Component):
-  """Input component.
-
-  Attributes:
-    dim: dimension of input component.
-  """
+  """Input component."""
 
   def __init__(self, component_id: int, name: str, dim: int) -> None:
     """Initialize.
 
     Args:
       component_id: component id.
-      name: component dim.
+      name: component name.
       dim: dimension of input component.
     """
     super().__init__(component_id, name, [])
@@ -367,29 +364,6 @@ class TdnnComponent(Component):
     return actions
 
 
-class Components(Enum):
-  """Kaldi nnet3 components."""
-
-  AffineComponent = AffineComponent
-  BatchNormComponent = BatchNormComponent
-  FixedAffineComponent = AffineComponent
-  GeneralDropoutComponent = Component
-  LinearComponent = AffineComponent
-  NaturalGradientAffineComponent = AffineComponent
-  NoOpComponent = Component
-  RectifiedLinearComponent = Component
-  LogSoftmaxComponent = Component
-  TdnnComponent = TdnnComponent
-
-
-# pylint: disable=invalid-name
-COMPONENT_TYPE = Union[Component, InputComponent, OutputComponent,
-                       AppendComponent, OffsetComponent, ReplaceIndexComponent,
-                       ScaleComponent, SpliceComponent, SumComponent,
-                       AffineComponent, BatchNormComponent, TdnnComponent]
-COMPONENTS_TYPE = List[COMPONENT_TYPE]
-
-
 def read_next_token(line: str, pos: int) -> Tuple[Union[str, None], int]:
   """Read next token from line.
 
@@ -400,9 +374,6 @@ def read_next_token(line: str, pos: int) -> Tuple[Union[str, None], int]:
   Returns:
     Token (None if not found) and current position.
   """
-  assert isinstance(line, str) and isinstance(pos, int)
-  assert pos >= 0
-
   while pos < len(line) and line[pos].isspace():
     pos += 1
 
@@ -459,7 +430,6 @@ def _read_bool(line: str,
     raise ValueError(f'Error at position {pos}, expected bool but got {tok}.')
 
 
-# pylint: disable = unused-argument
 def _read_int(line: str, pos: int, line_buffer: TextIO) -> Tuple[int, str, int]:
   """Read int value from line.
 
@@ -512,8 +482,7 @@ def __read_vector(line: str,
     vector, line string and current position.
   """
   tok, pos = read_next_token(line, pos)
-  if tok != '[':
-    raise ValueError(f'Error at line position {pos}, expected [ but got {tok}.')
+  check(tok == '[', f'Error at line position {pos}, expected [ but got {tok}.')
 
   vector = []
   while True:
@@ -522,16 +491,14 @@ def __read_vector(line: str,
       break
     if tok is None:
       line = next(line_buffer)
-      if line is None:
-        raise ValueError('Encountered EOF while reading vector.')
+      check(line is not None, 'Encountered EOF while reading vector.')
 
       pos = 0
       continue
 
     vector.append(tok)
 
-  if tok is None:
-    raise ValueError('Encountered EOF while reading vector.')
+  check(tok is not None, 'Encountered EOF while reading vector.')
   return vector, line, pos
 
 
@@ -581,9 +548,6 @@ def __check_for_newline(line: str, pos: int) -> Tuple[bool, int]:
   Returns:
     bool and current position.
   """
-  assert isinstance(line, str) and isinstance(pos, int)
-  assert pos >= 0
-
   saw_newline = False
   while pos < len(line) and line[pos].isspace():
     if line[pos] == '\n':
@@ -607,8 +571,7 @@ def _read_matrix_trans(line: str,
     matrix transpose, line string and current position.
   """
   tok, pos = read_next_token(line, pos)
-  if tok != '[':
-    raise ValueError(f'Error at line position {pos}, expected [ but got {tok}.')
+  check(tok == '[', f'Error at line position {pos}, expected [ but got {tok}.')
 
   mat = []
   while True:
@@ -633,8 +596,28 @@ def _read_matrix_trans(line: str,
       break
     if tok is None:
       line = next(line_buffer)
-      if line is None:
-        raise ValueError('Encountered EOF while reading matrix.')
+      check(line is not None, 'Encountered EOF while reading matrix.')
       pos = 0
 
   return np.transpose(np.array(mat, dtype=np.float32)), line, pos
+
+
+TYPE_TO_COMPONENT = {
+    'GeneralDropoutComponent': Component,
+    'NoOpComponent': Component,
+    'RectifiedLinearComponent': Component,
+    'LogSoftmaxComponent': Component,
+    'AffineComponent': AffineComponent,
+    'FixedAffineComponent': AffineComponent,
+    'LinearComponent': AffineComponent,
+    'NaturalGradientAffineComponent': AffineComponent,
+    'BatchNormComponent': BatchNormComponent,
+    'TdnnComponent': TdnnComponent
+}
+
+# pylint: disable=invalid-name
+COMPONENT_TYPE = Union[Component, InputComponent, OutputComponent,
+                       AppendComponent, OffsetComponent, ReplaceIndexComponent,
+                       ScaleComponent, SpliceComponent, SumComponent,
+                       AffineComponent, BatchNormComponent, TdnnComponent]
+COMPONENTS_TYPE = List[COMPONENT_TYPE]

@@ -3,12 +3,11 @@
 # Created by tz301 on 2020/05/22
 """Convert kaldi model to tensorflow pb."""
 import logging
-import os
 from argparse import ArgumentParser
+from os import environ
 from pathlib import Path
 from subprocess import run
 from tempfile import TemporaryDirectory
-from typing import List
 
 from onnx import ModelProto
 from onnx_tf.backend import prepare
@@ -19,7 +18,6 @@ from converter.graph import Graph
 from converter.parser import Parser
 
 _CHUNK_SIZE = 21
-
 _COMPONENT_TO_NODE = {
     cop.Component: node.KaldiNode,
     cop.AppendComponent: node.AppendNode,
@@ -54,7 +52,8 @@ class Converter:
                nnet3_file: Path,
                left_context: int,
                right_context: int,
-               chunk_size: int = _CHUNK_SIZE) -> None:
+               chunk_size: int = _CHUNK_SIZE
+               ) -> None:
     """Initialize.
 
     Args:
@@ -63,7 +62,7 @@ class Converter:
       right_context: right context of model.
       chunk_size: chunk size, default is _CHUNK_SIZE.
     """
-    os.environ["CUDA_VISIBLE_DEVICES"] = ""  # Only use cpu.
+    environ["CUDA_VISIBLE_DEVICES"] = ""  # Only use cpu.
     self.__nnet3_file = nnet3_file
     self.__left_context = left_context
     self.__right_context = right_context
@@ -74,18 +73,18 @@ class Converter:
     self.__outputs = []
     self.__name_to_input_dim = dict()
 
-  def __parse_nnet3_components(self) -> List[cop.COMPONENT_TYPE]:
-    """Parse kaldi's nnet3 model file to get components.
+  def __parse_nnet3_components(self) -> cop.COMPONENTS_TYPE:
+    """Parse kaldi's nnet3 model file to get component list.
 
     Returns:
-      Kaldi's nnet3 components.
+      Kaldi's nnet3 component list.
     """
     logging.info(f'Start parse nnet3 model file: {self.__nnet3_file}.')
     with self.__nnet3_file.open(encoding='utf-8') as nnet3_line_buffer:
       return Parser(nnet3_line_buffer).run()
 
   def __convert_components_to_nodes(self,
-                                    components: List[cop.Component]
+                                    components: cop.COMPONENTS_TYPE
                                     ) -> node.NODE_TYPES:
     """Convert all kaldi's nnet3 components to kaldi nodes.
 
@@ -121,20 +120,18 @@ class Converter:
       o_file.write(onnx_model.SerializeToString())
 
   @staticmethod
-  def __generate_tensorflow_model(onnx_model: ModelProto,
-                                  out_file: Path
-                                  ) -> None:
-    """Generate onnx model to file.
+  def __generate_tf_model(onnx_model: ModelProto, out_file: Path) -> None:
+    """Generate tensorflow model to file.
 
     Args:
       onnx_model: onnx model.
       out_file: output model file.
     """
     with TemporaryDirectory() as tmp:
-      tmp_file = Path(tmp) / 'tmp.pb'
-      prepare(onnx_model).export_graph(tmp_file)
+      pb_file = Path(tmp) / 'tmp.pb'
+      prepare(onnx_model).export_graph(pb_file)
       cmd = ['python3', '-m', 'tensorflow.python.tools.optimize_for_inference',
-             '--input', tmp_file, '--output', out_file, '--input_names',
+             '--input', pb_file, '--output', out_file, '--input_names',
              'input,ivector', '--output_names', 'output.affine']
       run(cmd, check=True)
 
@@ -154,8 +151,10 @@ class Converter:
 
     if model_format == 'onnx':
       self.__generate_onnx_model(onnx_model, out_file)
+    elif model_format == 'tf':
+      self.__generate_tf_model(onnx_model, out_file)
     else:
-      self.__generate_tensorflow_model(onnx_model, out_file)
+      raise NotImplementedError(f'Not supported model format: {model_format}.')
 
     logging.info(f'Succeed generate {model_format} format model to {out_file}.')
 
