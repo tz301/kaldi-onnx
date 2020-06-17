@@ -40,8 +40,8 @@ kaldi/src/nnet3bin/nnet3-copy --binary=false --prepare-for-test=true <final.mdl>
 
 Don't forget to use the `--prepare-for-test=true` option.
 
-Before converting, you need to use `nnet3-am-info` to get left_context and right_context,
-which is required for converting.
+Before converting, you need to use `kaldi/src/nnet3bin/nnet3-am-info <final.mdl>`
+to get left_context and right_context, which is required for converting.
 
 ### 4. Convert
 
@@ -49,19 +49,25 @@ which is required for converting.
 python3 -m converter.convert <input_kaldi_nnet3_file> <left_context> <right_context> <out_model_file> [--format <format>] [--chunk_size <chunk_size>]
 ```
 
-[--format]: 'onnx' - default, output onnx model, 'tf' - output tensorflow pb model.
+`--format`: 'onnx' - default, output onnx model, 'tf' - output tensorflow pb model.
 
-[--chunk_size]: using 21 as default chunk size.
+`--chunk_size`: using 21 as default chunk size. Subsample_factor is 3, input 21 frames feature, then 7 frames will be output for decoding.
+
+### 5. Test
 
 See [tests](tests/tests.py) for how to use pb model.
 
-### 5. Graph review
+[model1](tests/data/model1) use the model struct from [swbd/tdnn_7p](https://github.com/kaldi-asr/kaldi/blob/master/egs/swbd/s5c/local/chain/tuning/run_tdnn_7p.sh).
+
+[model2](tests/data/model2) use the model struct from [swbd/tdnn_7q](https://github.com/kaldi-asr/kaldi/blob/master/egs/swbd/s5c/local/chain/tuning/run_tdnn_7q.sh).
+
+### 6. Graph review
 
 After converting, there is a graphic tool for you to review the onnx model: [ONNX Model Viewer](https://lutzroeder.github.io/netron/).
 
 ## Acknowledgement
 
-* [Kaldi Speech Recognition Toolkit](https://github.com/kaldi-asr/kaldi).
 * [Kaldi-ONNX](https://github.com/XiaoMi/kaldi-onnx)
-* [ONNX](https://github.com/onnx/onnx).
-* [ONNX-TF](https://github.com/onnx/onnx-tensorflow).
+* [Kaldi Speech Recognition Toolkit](https://github.com/kaldi-asr/kaldi)
+* [ONNX](https://github.com/onnx/onnx)
+* [ONNX-TF](https://github.com/onnx/onnx-tensorflow)
