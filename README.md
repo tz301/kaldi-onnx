@@ -46,7 +46,7 @@ to get left_context and right_context, which is required for converting.
 ### 4. Convert
 
 ```sh
-python3 -m converter.convert <input_kaldi_nnet3_file> <left_context> <right_context> <out_model_file> [--format <format>] [--chunk_size <chunk_size>]
+python3 -m converter.converter <input_kaldi_nnet3_file> <left_context> <right_context> <out_model_file> [--format <format>] [--chunk_size <chunk_size>]
 ```
 
 `--format`: 'onnx' - default, output onnx model, 'tf' - output tensorflow pb model.
